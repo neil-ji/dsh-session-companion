@@ -20,9 +20,11 @@ assert.ok(start > 0 && end > start, 'threads region markers are present');
 
 const region = source.slice(start, end);
 const factory = new Function(
-  region + '\nreturn { pruneThread, readThreads, writeThreads, THREAD_KEY, THREAD_MAX_MESSAGES, THREAD_MAX_CHARS };',
+  region +
+    '\nreturn { pruneThread, readThreads, writeThreads, dropThread, THREAD_KEY, THREAD_MAX_MESSAGES, THREAD_MAX_CHARS };',
 );
-const { pruneThread, readThreads, writeThreads, THREAD_KEY, THREAD_MAX_MESSAGES, THREAD_MAX_CHARS } = factory();
+const { pruneThread, readThreads, writeThreads, dropThread, THREAD_KEY, THREAD_MAX_MESSAGES, THREAD_MAX_CHARS } =
+  factory();
 
 let passed = 0;
 function check(name, fn) {
@@ -36,6 +38,7 @@ function fakeStorage(initial) {
   return {
     getItem: (key) => (map.has(key) ? map.get(key) : null),
     setItem: (key, value) => map.set(key, value),
+    removeItem: (key) => map.delete(key),
     map,
   };
 }
@@ -101,6 +104,46 @@ check('a storage that refuses writes reports failure instead of throwing', () =>
     },
   };
   assert.equal(writeThreads(hostile, { a: [] }), false);
+});
+
+check('clearing one session leaves the others in storage', () => {
+  const storage = fakeStorage();
+  const threads = { s1: [{ role: 'user', text: 'a' }], s2: [{ role: 'user', text: 'b' }] };
+  writeThreads(storage, threads);
+  const after = dropThread(storage, threads, 's1');
+  assert.deepEqual(Object.keys(after), ['s2']);
+  assert.deepEqual(readThreads(storage), { s2: [{ role: 'user', text: 'b' }] });
+});
+
+check('clearing the last session removes the storage key entirely', () => {
+  const storage = fakeStorage();
+  const threads = { s1: [{ role: 'user', text: 'a' }] };
+  writeThreads(storage, threads);
+  assert.equal(storage.map.has(THREAD_KEY), true);
+  dropThread(storage, threads, 's1');
+  assert.equal(storage.map.has(THREAD_KEY), false, 'nothing is left behind');
+  assert.deepEqual(readThreads(storage), {});
+});
+
+check('clearing an unknown session is a no-op', () => {
+  const storage = fakeStorage();
+  const threads = { s1: [{ role: 'user', text: 'a' }] };
+  writeThreads(storage, threads);
+  dropThread(storage, threads, 'nope');
+  assert.deepEqual(readThreads(storage), { s1: [{ role: 'user', text: 'a' }] });
+});
+
+check('clearing survives a storage without removeItem', () => {
+  const map = new Map([[THREAD_KEY, JSON.stringify({ s1: [{ role: 'user', text: 'a' }] })]]);
+  const storage = {
+    getItem: (key) => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => map.set(key, value),
+    // no removeItem at all
+  };
+  const threads = { s1: [{ role: 'user', text: 'a' }] };
+  assert.doesNotThrow(() => dropThread(storage, threads, 's1'));
+  assert.deepEqual(Object.keys(threads), []);
+  assert.equal(map.get(THREAD_KEY), '{}', 'the empty object clears the entry');
 });
 
 console.log('\n' + passed + ' checks passed');

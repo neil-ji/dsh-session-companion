@@ -76,6 +76,7 @@ const HEAD = (dark) => `<!doctype html>
 
 const CLOSE_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 const SEND_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3.6M8 3.6L4 7.6M8 3.6l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const TRASH_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.8 4.6h10.4M6.3 4.6V3h3.4v1.6M4.3 4.6l.7 8.4h6L11.7 4.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const THEMES = ['aurora', 'mist', 'celadon', 'paper', 'blush', 'glass'];
 const THEME_LABELS = {
@@ -90,15 +91,20 @@ const THEME_LABELS = {
 const PROGRESS_NORMAL = `<div class="sc-progress"><span class="sc-pitem">待办 6/9</span><span class="sc-pitem"><span class="sc-psep">·</span>4 个文件</span><span class="sc-pitem"><span class="sc-psep">·</span>48.3k tok</span><span class="sc-pitem"><span class="sc-psep">·</span>已跑 12 分</span></div>`;
 const PROGRESS_STALL = `<div class="sc-progress is-warn"><span class="sc-pitem sc-pwarn">可能卡住了</span><span class="sc-psep">·</span><span class="sc-pitem">连续 3 次工具调用失败</span></div>`;
 
-function head(live, theme, picker, progress) {
+function head(live, theme, picker, progress, clearState) {
   const dotClass = 'sc-dot' + (live ? ' is-live' : '') + (progress === 'stall' ? ' is-warn' : '');
   const progressHtml = progress === 'stall' ? PROGRESS_STALL : progress === 'normal' ? PROGRESS_NORMAL : '';
+  const clearHtml =
+    clearState === 'armed'
+      ? '<button type="button" class="sc-clear is-armed" aria-label="确认清空？">确认清空？</button>'
+      : '<button type="button" class="sc-clear" aria-label="清空本会话的问答记录">' + TRASH_ICON + '</button>';
   return `<div class="sc-head">
   <div class="sc-head-row">
     <span class="${dotClass}"></span>
     <div class="sc-title">随行问答</div>
     <span class="sc-spacer"></span>
     <span class="sc-badge">${live ? '运行中' : '空闲'}</span>
+    ${clearHtml}
     <button type="button" class="sc-theme-btn${picker ? ' is-open' : ''}" aria-label="切换材质"><i></i></button>
     <button type="button" class="sc-close" aria-label="关闭">${CLOSE_ICON}</button>
   </div>
@@ -152,11 +158,11 @@ const EMPTY_BODY = `<div class="sc-body"><div class="sc-list">
 </div></div>`;
 
 function page(options) {
-  const { dark, body, live, value, palette, picker, progress } = options;
+  const { dark, body, live, value, palette, picker, progress, clearState } = options;
   return (
     HEAD(dark) +
     `<div class="sc-panel" role="dialog" aria-label="随行问答" data-palette="${palette}">` +
-    head(live, palette, !!picker, progress) +
+    head(live, palette, !!picker, progress, clearState) +
     body +
     foot(value) +
     `</div></div></body></html>`
@@ -201,6 +207,17 @@ fs.writeFileSync(
   'utf8',
 );
 written += 3;
+fs.writeFileSync(
+  path.join(here, 'preview-clear.html'),
+  page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', progress: 'normal', clearState: 'idle' }),
+  'utf8',
+);
+fs.writeFileSync(
+  path.join(here, 'preview-clear-armed.html'),
+  page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', progress: 'normal', clearState: 'armed' }),
+  'utf8',
+);
+written += 2;
 fs.writeFileSync(path.join(here, 'preview-aurora-empty.html'), page({ dark: false, body: EMPTY_BODY, live: false, value: '', palette: 'aurora' }), 'utf8');
 written += 1;
 

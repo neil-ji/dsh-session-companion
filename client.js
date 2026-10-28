@@ -106,6 +106,29 @@ window.__ModuleLoader__.load({
         return false;
       }
     }
+
+    /**
+     * Forget one Session's thread. The empty case removes the key entirely so
+     * clearing really leaves nothing behind in storage.
+     */
+    function dropThread(storage, threads, sessionId) {
+      delete threads[sessionId];
+      if (Object.keys(threads).length === 0) {
+        try {
+          storage.removeItem(THREAD_KEY);
+        } catch {
+          // Some storages omit removeItem; an empty object still clears it.
+          try {
+            storage.setItem(THREAD_KEY, '{}');
+          } catch {
+            /* ignore */
+          }
+        }
+        return threads;
+      }
+      writeThreads(storage, threads);
+      return threads;
+    }
     //#endregion threads
 
     const DICTS = {
@@ -143,6 +166,8 @@ window.__ModuleLoader__.load({
         tonePlain: 'Plain',
         toneTechnical: 'Technical',
         toneHint: 'Switch how answers are written',
+        clearHint: 'Clear this session\u2019s thread',
+        clearConfirm: 'Clear?',
         theme_aurora: 'Aurora',
         theme_mist: 'Mist',
         theme_celadon: 'Celadon',
@@ -187,6 +212,8 @@ window.__ModuleLoader__.load({
         tonePlain: '说人话',
         toneTechnical: '技术细节',
         toneHint: '切换回答的语气（Ctrl+Shift+/ 开关面板）',
+        clearHint: '清空本会话的问答记录',
+        clearConfirm: '确认清空？',
         theme_aurora: '极光',
         theme_mist: '雾蓝',
         theme_celadon: '青瓷',
@@ -385,6 +412,12 @@ window.__ModuleLoader__.load({
       '.sc-panel[data-palette="aurora"]::before{background:linear-gradient(100deg,rgba(118,214,196,.20),rgba(146,146,255,.17) 46%,rgba(255,168,198,.17) 100%);-webkit-mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.4) 52%,transparent 100%);mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.4) 52%,transparent 100%);}',
       '[data-ds-dark-theme] .sc-panel[data-palette="aurora"]::before{background:linear-gradient(100deg,rgba(112,200,186,.16),rgba(140,140,250,.15) 46%,rgba(240,150,190,.15) 100%);}',
 
+      /* clear-thread button, with its two-step arm state */
+      '.sc-clear{appearance:none;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:10.5px;height:24px;min-width:24px;padding:0 4px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:none;opacity:.82;transition:opacity .12s ease,background .12s ease,color .12s ease,border-color .12s ease;}',
+      '.sc-clear:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);opacity:1;}',
+      '.sc-clear:disabled{opacity:.22;cursor:default;}',
+      '.sc-clear.is-armed{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);padding:0 7px;opacity:1;}',
+      '.sc-clear.is-armed:hover{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 12%,transparent);}',
       /* material picker */
       '.sc-theme-btn{appearance:none;border:0;background:transparent;padding:0;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;opacity:.75;transition:opacity .12s ease,background .12s ease;}',
       '.sc-theme-btn:hover,.sc-theme-btn.is-open{opacity:1;background:var(--dsw-alias-bg-layer-2);}',
@@ -677,6 +710,7 @@ window.__ModuleLoader__.load({
       tone: readTone(),
       pendingDraft: null,
       draftResult: null,
+      confirmClear: false,
       threads: readThreads(window.localStorage),
     };
     const listeners = new Set();
@@ -699,6 +733,7 @@ window.__ModuleLoader__.load({
         tone: store.tone,
         pendingDraft: store.pendingDraft,
         draftResult: store.draftResult,
+        confirmClear: store.confirmClear,
       };
     }
 
@@ -963,7 +998,14 @@ window.__ModuleLoader__.load({
     }
 
     function closeCompanion() {
-      patch({ open: false });
+      patch({ open: false, confirmClear: false });
+    }
+
+    /** Forget this Session's thread, in memory and in storage. */
+    function clearThread() {
+      const id = store.sessionId;
+      if (id) dropThread(window.localStorage, store.threads, id);
+      patch({ messages: [], draftResult: null, confirmClear: false });
     }
 
     /**
@@ -1005,6 +1047,18 @@ window.__ModuleLoader__.load({
       'svg',
       { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
       h('path', { d: 'M4 4l8 8M12 4l-8 8', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }),
+    );
+
+    const ICON_TRASH = h(
+      'svg',
+      { width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+      h('path', {
+        d: 'M2.8 4.6h10.4M6.3 4.6V3h3.4v1.6M4.3 4.6l.7 8.4h6L11.7 4.6',
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      }),
     );
 
     const ICON_SEND = h(
@@ -1186,6 +1240,21 @@ window.__ModuleLoader__.load({
         [draft, state.open],
       );
 
+      // The clear button un-arms itself, so a stray click cannot wipe a thread
+      // minutes later.
+      React.useEffect(
+        function () {
+          if (!state.confirmClear) return undefined;
+          const timer = setTimeout(function () {
+            patch({ confirmClear: false });
+          }, 4000);
+          return function () {
+            clearTimeout(timer);
+          };
+        },
+        [state.confirmClear],
+      );
+
       if (!state.open) return null;
 
       const status = state.statusFor === state.sessionId ? state.status : null;
@@ -1277,6 +1346,27 @@ window.__ModuleLoader__.load({
             h('div', { className: 'sc-title' }, t('title')),
             h('span', { className: 'sc-spacer' }),
             h('span', { className: 'sc-badge' }, live ? t('running') : t('idle')),
+            state.messages.length
+              ? h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'sc-clear' + (state.confirmClear ? ' is-armed' : ''),
+                    title: state.confirmClear ? t('clearConfirm') : t('clearHint'),
+                    'aria-label': state.confirmClear ? t('clearConfirm') : t('clearHint'),
+                    disabled: state.busy,
+                    onClick: function () {
+                      if (state.busy) return;
+                      if (state.confirmClear) {
+                        clearThread();
+                        return;
+                      }
+                      patch({ confirmClear: true });
+                    },
+                  },
+                  state.confirmClear ? h('span', null, t('clearConfirm')) : ICON_TRASH,
+                )
+              : null,
             h(
               'button',
               {
