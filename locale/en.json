@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Companion",
+    "description": "Ask a separate, tool-less model what a busy session is doing right now. Reads the session log, never touches it."
+  }
+}

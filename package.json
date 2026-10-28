@@ -1,0 +1,44 @@
+{
+  "name": "@local/dsh-session-companion",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "A read-only chat channel that answers questions about a running session while its agent is too busy to reply.",
+  "author": "Neil Ji",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/neil-ji/dsh-session-companion.git"
+  },
+  "homepage": "https://github.com/neil-ji/dsh-session-companion#readme",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "session",
+    "companion"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
