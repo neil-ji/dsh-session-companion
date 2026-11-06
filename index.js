@@ -51,7 +51,8 @@ const SYSTEM_PROMPT = [
   '怎么说话（用户最在意这一点）：',
   '- 默认 3 句以内、100 字以内就说完。用户明确说“展开说/详细点”才加长。',
   '- 大白话，像同事在旁边顺口解释一句。不用“结论/要点/综上/首先其次”这类套话，也不要写标题。',
-  '- 第一句直接回答“它现在在干什么”，第二句说“为什么/接下来要做什么”，最多再来一句提醒。',
+  '- 第一句直接回答“它现在在干什么”，第二句说“为什么/接下来要做什么”。',
+  '- 用户问的是判断（该不该打断、要不要等、稳不稳）才给一句明确看法；没问就只描述现状，不要主动给建议。',
   '- 那个 AI 的思考链是英文，你要翻译成中文说出来，别贴英文原文，也别逐字复述。',
   '- 技术名词（文件名、命令、工具名）可以保留，其余都用日常说法。',
   '- 需要罗列时最多两条，用短句或顿号连着说，不要堆多层列表。',
@@ -60,7 +61,7 @@ const SYSTEM_PROMPT = [
   '事实边界：',
   '- 只依据快照作答。快照里看不到的，直接说“快照里看不到”，不要猜，不要编造文件内容或执行结果。',
   '- 默认用中文；用户用别的语言提问就跟着用那种语言。',
-  '- 如果它看起来卡住了、在反复重试、或者在做一件明显偏离目标的事，用一句话直接点出来。',
+  '- 如果它看起来卡住了、在反复重试、或者在做一件明显偏离目标的事，用一句事实点出来（例如“同一个调用已经连续失败 3 次”），不要写成“你应该…”的指令。',
 ].join('\n');
 
 /** Appended only when the reader asks for the technical register. */
@@ -72,9 +73,26 @@ const TONE_TECHNICAL = [
   '- 仍然不要标题、不要套话、不要为了显得专业而堆术语；长度上限放宽到 200 字。',
 ].join('\n');
 
+/**
+ * Appended to the fixed "how is it going" question the panel asks by itself.
+ * That text is read, not answered: the reader wants the situation, not advice,
+ * and a suggestion at the end is exactly what makes it feel like a chat reply.
+ */
+const OVERVIEW_ONLY = [
+  '',
+  '这一次只要现状，不要建议：',
+  '- 只描述它在做什么、做到哪一步、有没有异常；不评价好坏，不指挥下一步。',
+  '- 不出现“你可以/建议/先别/应该/不妨/记得/最好”这类话。',
+  '- 你发现的风险用事实说（“同一个调用已经失败 3 次”“测试结果还没返回”），而不是“你应该先…”。',
+  '- 三句以内，80 字左右。',
+].join('\n');
+
 /** The system prompt for one request, in the requested register. */
-function buildSystemPrompt(tone) {
-  return tone === 'technical' ? SYSTEM_PROMPT + TONE_TECHNICAL : SYSTEM_PROMPT;
+function buildSystemPrompt(tone, overview) {
+  let prompt = tone === 'technical' ? SYSTEM_PROMPT + TONE_TECHNICAL : SYSTEM_PROMPT;
+  // Last, so its constraints win over the tone block's length allowance.
+  if (overview) prompt += OVERVIEW_ONLY;
+  return prompt;
 }
 
 /* ------------------------------------------------------------------ utils */
@@ -646,6 +664,8 @@ export function apply(ctx, rawConfig) {
     const sessionId = String(body.sessionId || '');
     const question = String(body.question || '').trim().slice(0, 4000);
     const tone = body.tone === 'technical' ? 'technical' : 'plain';
+    // The panel's automatic "how is it going" call: describe, never advise.
+    const overview = body.mode === 'overview';
     if (!sessionId || !question) {
       sendJson(res, { ok: false, error: 'missing-arguments' }, 400);
       return;
@@ -700,7 +720,7 @@ export function apply(ctx, rawConfig) {
     const options = {
       provider: route.provider,
       model: route.model,
-      system: buildSystemPrompt(tone),
+      system: buildSystemPrompt(tone, overview),
       messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
       // The route needs a stable id for cache affinity, but it must NOT be the
       // Session's own id: these tokens are the Companion's, not the Session's.

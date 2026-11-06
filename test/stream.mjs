@@ -61,7 +61,7 @@ function harness(responder) {
 await check('deltas survive frames split across chunks, then resolve ok', async () => {
   const h = harness(() => sseResponse([{ t: 'start' }, { t: 'delta', text: '它' }, { t: 'delta', text: '在跑测试。' }, { t: 'done' }], 5));
   const deltas = [];
-  const result = await h.stream('现在什么情况？', (t) => deltas.push(t), undefined, []);
+  const result = await h.stream('现在什么情况？', (t) => deltas.push(t), undefined, { history: [] });
   assert.deepEqual(deltas, ['它', '在跑测试。']);
   assert.deepEqual(result, { ok: true });
   const body = JSON.parse(h.calls[0].init.body);
@@ -69,6 +69,14 @@ await check('deltas survive frames split across chunks, then resolve ok', async 
   assert.equal(body.question, '现在什么情况？');
   assert.deepEqual(body.history, [], 'the overview sends no chat history');
   assert.equal(body.tone, 'plain');
+});
+
+await check('the overview call is marked as such, a follow-up is not', async () => {
+  const h = harness(() => sseResponse([{ t: 'delta', text: 'x' }, { t: 'done' }], 64));
+  await h.stream('现在什么情况？', () => {}, undefined, { history: [], mode: 'overview' });
+  await h.stream('然后呢？', () => {}, undefined);
+  assert.equal(JSON.parse(h.calls[0].init.body).mode, 'overview');
+  assert.equal(JSON.parse(h.calls[1].init.body).mode, 'ask', 'only the automatic overview is read-only prose');
 });
 
 await check('omitted history falls back to the built transcript', async () => {
@@ -79,7 +87,7 @@ await check('omitted history falls back to the built transcript', async () => {
 
 await check('an in-stream error event becomes a failure, not an exception', async () => {
   const h = harness(() => sseResponse([{ t: 'delta', text: '半' }, { t: 'error', code: 'model-error', message: 'boom' }], 3));
-  const result = await h.stream('在干嘛', () => {}, undefined, []);
+  const result = await h.stream('在干嘛', () => {}, undefined, { history: [] });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'model-error');
   assert.equal(result.message, 'boom');
@@ -87,14 +95,14 @@ await check('an in-stream error event becomes a failure, not an exception', asyn
 
 await check('an HTTP refusal carries the Host error code', async () => {
   const h = harness(() => ({ ok: false, status: 409, json: async () => ({ ok: false, error: 'session-not-live' }) }));
-  const result = await h.stream('在干嘛', () => {}, undefined, []);
+  const result = await h.stream('在干嘛', () => {}, undefined, { history: [] });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'not-live');
 });
 
 await check('a response without a readable body is a failure, not a crash', async () => {
   const h = harness(() => ({ ok: true, status: 200, body: {} }));
-  const result = await h.stream('在干嘛', () => {}, undefined, []);
+  const result = await h.stream('在干嘛', () => {}, undefined, { history: [] });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'request');
 });
@@ -111,7 +119,7 @@ await check('a cancelled stream rejects with AbortError for the caller to ignore
       }),
     }),
   );
-  await assert.rejects(() => h.stream('在干嘛', () => {}, undefined, []), (error) => error.name === 'AbortError');
+  await assert.rejects(() => h.stream('在干嘛', () => {}, undefined, { history: [] }), (error) => error.name === 'AbortError');
 });
 
 console.log('\n' + passed + ' checks passed');

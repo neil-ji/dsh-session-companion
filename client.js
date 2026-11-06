@@ -949,7 +949,8 @@ window.__ModuleLoader__.load({
      * with { ok } or { ok: false, code, message }; only a cancelled request
      * throws (AbortError), and the caller decides what that means.
      */
-    async function requestStream(question, onDelta, signal, history) {
+    async function requestStream(question, onDelta, signal, options) {
+      const opts = options && typeof options === 'object' ? options : {};
       const response = await fetch(ROUTE + '/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -957,8 +958,11 @@ window.__ModuleLoader__.load({
         body: JSON.stringify({
           sessionId: store.sessionId,
           question: question,
-          history: Array.isArray(history) ? history : buildHistory(),
+          history: Array.isArray(opts.history) ? opts.history : buildHistory(),
           tone: store.tone,
+          // `overview` tells the Host this text is read, not answered: it asks
+          // the model for the situation and forbids advice.
+          mode: opts.mode === 'overview' ? 'overview' : 'ask',
         }),
         signal: signal,
       });
@@ -1139,9 +1143,10 @@ window.__ModuleLoader__.load({
             flush(false);
           },
           controller.signal,
-          // The overview is written from the Session log alone; dragging the
-          // chat thread along would only bias it toward older questions.
-          [],
+          // The overview is written from the Session log alone, and it reports
+          // rather than advises: dragging the chat thread along would only bias
+          // it toward older questions.
+          { history: [], mode: 'overview' },
         );
         flush(true);
         if (!result.ok) {

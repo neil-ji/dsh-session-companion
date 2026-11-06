@@ -50,6 +50,7 @@ git clone https://github.com/neil-ji/dsh-session-companion.git
 - 概况卡的时间戳是**这份概况写于何时**，不是会话最后活动时间；
 - 切换「说人话 / 技术细节」会**立刻按新语气重写**概况，不用等下次打开；
 - 概况**不进问答线程**、不写 `localStorage`、也不作为追问的历史发给模型——它只是「此刻的一张快照」；
+- 概况**只描述、不建议**：不写「你可以/建议/先别/应该」这类话，发现的问题也用事实说（“同一个调用已经失败 3 次”），不指挥下一步。想要判断就在下面问「我该不该打断它」；
 - 清空问答记录只清问答线程，概况还在，下次打开照常重写；
 - 读取失败时卡片里给「重试」，不会把整个面板变成一句报错。
 
@@ -195,7 +196,7 @@ Host 半边把会话日志整理成一份摘要再交给模型：
 只挂在本机 Web 服务上，仅接受同源请求，请求体上限 96 KiB。
 
 - `GET /session-companion/status?session=<id>` → `{ ok, running, phase, headline, model, progress }`；会话不在本进程时 `409 session-not-live`
-- `POST /session-companion/ask` `{ sessionId, question, history, tone }` → SSE 事件流：`start` / `delta` / `done` / `error`
+- `POST /session-companion/ask` `{ sessionId, question, history, tone, mode }` → SSE 事件流：`start` / `delta` / `done` / `error`；`mode: 'overview'` 表示这是面板自动发的概况请求，Host 会在 system prompt 末尾追加强制约束（只描述、不建议、80 字左右），其它取值一律按追问处理
 
 概况没有单独的接口：它就是 `/ask` 带着一句固定的问题、`history: []`，前端把结果写进概况卡而不是问答线程。
 

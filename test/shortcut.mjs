@@ -67,4 +67,23 @@ check('the technical tone appends its register block', () => {
   assert.equal(technical.includes('200 字'), true);
 });
 
+check('the automatic overview forbids advice', () => {
+  const overview = buildSystemPrompt('plain', true);
+  assert.equal(buildSystemPrompt('plain'), buildSystemPrompt('plain', false), 'off by default');
+  assert.equal(overview.startsWith(buildSystemPrompt('plain')), true);
+  assert.equal(overview.includes('这一次只要现状，不要建议'), true);
+  assert.equal(overview.includes('不出现“你可以/建议/先别/应该/不妨/记得/最好”这类话'), true);
+});
+
+check('the base prompt only offers a judgement when asked for one', () => {
+  const plain = buildSystemPrompt('plain');
+  assert.equal(plain.includes('最多再来一句提醒'), false, 'no unsolicited closing reminder');
+  assert.equal(plain.includes('用户问的是判断'), true);
+});
+
+check('overview mode keeps the technical block but still ends with the ban', () => {
+  const both = buildSystemPrompt('technical', true);
+  assert.equal(both.indexOf('这次用户想要技术视角') < both.indexOf('这一次只要现状'), true);
+});
+
 console.log('\n' + passed + ' checks passed');
