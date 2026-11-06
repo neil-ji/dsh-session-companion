@@ -121,17 +121,6 @@ git clone https://github.com/neil-ji/dsh-session-companion.git
 - **清空**：标题栏的垃圾桶按钮，点一下变成红色的「确认清空？」，再点一下才真的删；4 秒不点会自动退回。只清当前会话的线程，其它会话的记录不受影响；删到一条不剩时连 `localStorage` 的 key 一起移除。正在流式回答时按钮是禁用的，避免删到一半；
 - 概况**不**进这份存储：它是瞬时的，每次打开按需重写。
 
-## 建议回复（只填不发）
-
-随行可以在回答末尾用一个 ` ```reply ` 代码块给出一句可以直接发出去的话。面板把它渲染成一张「建议这样回复」卡片，带一个「填入输入框」按钮：
-
-- 点一下，文字被写进主输入框——**在光标处插入**，不会覆盖你已经打的内容；
-- **不会发送**，Enter 永远由你按；
-- 填入成功后随行面板自动关闭，把输入框还给你；
-- 插入被拒绝时退回整体替换（`setDraft`），再失败就在卡片上显示「填入失败」。
-
-实现上，面板挂在 root 层，拿不到 `inputActions`，所以它只记录一个 `pendingDraft` 意图；真正执行的是会话作用域的触发器（`captureInsertion` → `insertText` → `persistDraft`）。这条通路保证了随行永远只碰草稿，不碰发送。
-
 ## 主题（材质）
 
 材质与配色分成两层：`REFINED_CSS` 只负责几何与排版，`PALETTE_CSS` 是唯一决定颜色的地方。内置六套，都是"有色薄片"——浅色底 + 同色系强调色，深色模式各有一套配对：
@@ -214,7 +203,7 @@ Host 半边把会话日志整理成一份摘要再交给模型：
 
 ```bash
 node test/selftest.mjs   # 摘要渲染、预算裁剪、状态判定、实时流、进度/卡住、配置钳制
-node test/markdown.mjs   # Markdown 解析：行内/列表/代码块/未闭合标记/XSS/reply 围栏
+node test/markdown.mjs   # Markdown 解析：行内/列表/代码块/未闭合标记/XSS
 node test/threads.mjs    # 按会话记忆：裁剪、上限、往返、损坏数据、写入失败
 node test/shortcut.mjs   # 全局快捷键判定 + 语气 prompt 分支
 node test/overview.mjs   # 概况缓存：状态指纹、过期判定、何时复用、时间格式

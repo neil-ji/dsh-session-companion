@@ -213,11 +213,6 @@ window.__ModuleLoader__.load({
         unitMin: 'm',
         unitHour: 'h',
         stalled: 'may be stuck',
-        suggestLabel: 'Suggested reply',
-        suggestHint: 'Fills the composer. You still press Enter.',
-        suggestFill: 'Put in composer',
-        suggestDone: 'In composer ✓',
-        suggestFailed: 'Could not fill',
         tonePlain: 'Plain',
         toneTechnical: 'Technical',
         toneHint: 'Switch how answers are written',
@@ -268,11 +263,6 @@ window.__ModuleLoader__.load({
         unitMin: ' 分',
         unitHour: ' 小时',
         stalled: '可能卡住了',
-        suggestLabel: '建议这样回复',
-        suggestHint: '只填进输入框，发不发由你决定。',
-        suggestFill: '填入输入框',
-        suggestDone: '已填入 ✓',
-        suggestFailed: '填入失败',
         tonePlain: '说人话',
         toneTechnical: '技术细节',
         toneHint: '切换回答的语气（Ctrl+Shift+/ 开关面板）',
@@ -530,16 +520,6 @@ window.__ModuleLoader__.load({
       '.sc-dot.is-warn{background:var(--dsw-alias-state-warn-primary);}',
       '.sc-dot.is-warn.is-live{animation:none;}',
 
-      /* suggested reply */
-      '.sc-suggest{margin:2px 0 10px;border:1px solid var(--sc-user-bd);border-radius:12px;padding:10px 12px;background:color-mix(in srgb,var(--sc-accent) 6%,transparent);}',
-      '.sc-suggest-head{font-size:10.5px;letter-spacing:.02em;color:var(--dsw-alias-label-secondary);margin-bottom:5px;}',
-      '.sc-suggest-body{font-size:13px;line-height:1.6;color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere;}',
-      '.sc-suggest-foot{display:flex;align-items:center;gap:8px;margin-top:9px;}',
-      '.sc-suggest-btn{appearance:none;border:1px solid var(--sc-hover-bd);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:11.5px;height:26px;padding:0 10px;border-radius:8px;cursor:pointer;transition:background .12s ease;}',
-      '.sc-suggest-btn:hover{background:color-mix(in srgb,var(--sc-accent) 15%,transparent);}',
-      '.sc-suggest-btn.is-done{opacity:.7;cursor:default;}',
-      '.sc-suggest-hint{font-size:10.5px;color:var(--dsw-alias-label-secondary);}',
-
       /* tone switch */
       '.sc-tone{appearance:none;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:10.5px;height:19px;padding:0 7px;border-radius:6px;cursor:pointer;flex:none;transition:color .12s ease,border-color .12s ease,background .12s ease;}',
       '.sc-tone:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);}',
@@ -752,9 +732,6 @@ window.__ModuleLoader__.load({
       return blocks.map(function (block, index) {
         const key = 'b' + index;
         if (block.type === 'code') {
-          if (block.lang === 'reply') {
-            return h(Suggestion, { key: key, text: String(block.code || '').trim() });
-          }
           return h('pre', { key: key }, h('code', null, block.code));
         }
         if (block.type === 'h') {
@@ -799,8 +776,6 @@ window.__ModuleLoader__.load({
       theme: readTheme(),
       themePicker: false,
       tone: readTone(),
-      pendingDraft: null,
-      draftResult: null,
       confirmClear: false,
       threads: readThreads(window.localStorage),
     };
@@ -823,8 +798,6 @@ window.__ModuleLoader__.load({
         theme: store.theme,
         themePicker: store.themePicker,
         tone: store.tone,
-        pendingDraft: store.pendingDraft,
-        draftResult: store.draftResult,
         confirmClear: store.confirmClear,
       };
     }
@@ -1221,7 +1194,7 @@ window.__ModuleLoader__.load({
         }
         if (store.overview && store.overview.sessionId !== sessionId) store.overview = null;
       }
-      patch({ open: true, sessionId: sessionId, statusError: '', draftResult: null });
+      patch({ open: true, sessionId: sessionId, statusError: '' });
       ensurePolling();
       // No typing required: the panel opens onto the current situation.
       void primeOverview();
@@ -1235,17 +1208,7 @@ window.__ModuleLoader__.load({
     function clearThread() {
       const id = store.sessionId;
       if (id) dropThread(window.localStorage, store.threads, id);
-      patch({ messages: [], draftResult: null, confirmClear: false });
-    }
-
-    /**
-     * Ask the Session-scoped trigger to put this text into the composer. The
-     * trigger owns `inputActions`; the panel only records the intent.
-     */
-    function beginDraft(text) {
-      const value = String(text || '').trim();
-      if (!value || !store.sessionId) return;
-      patch({ pendingDraft: { sessionId: store.sessionId, text: value, at: Date.now() } });
+      patch({ messages: [], confirmClear: false });
     }
 
     /* ---------------------------------------------------------- components */
@@ -1333,33 +1296,6 @@ window.__ModuleLoader__.load({
       }),
     );
 
-    function Suggestion(props) {
-      const state = useStore();
-      const failed = state.draftResult && state.draftResult.text === props.text && !state.draftResult.ok;
-      return h(
-        'div',
-        { className: 'sc-suggest' },
-        h('div', { className: 'sc-suggest-head' }, t('suggestLabel')),
-        h('div', { className: 'sc-suggest-body' }, props.text),
-        h(
-          'div',
-          { className: 'sc-suggest-foot' },
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'sc-suggest-btn' + (failed ? ' is-done' : ''),
-              onClick: function () {
-                beginDraft(props.text);
-              },
-            },
-            failed ? t('suggestFailed') : t('suggestFill'),
-          ),
-          h('span', { className: 'sc-suggest-hint' }, t('suggestHint')),
-        ),
-      );
-    }
-
     function CompanionTrigger(props) {
       const state = useStore();
       const status = state.statusFor === props.sessionId ? state.status : null;
@@ -1385,37 +1321,6 @@ window.__ModuleLoader__.load({
           ensurePolling();
         },
         [props.sessionId],
-      );
-
-      React.useEffect(
-        function () {
-          const pending = state.pendingDraft;
-          if (!pending || pending.sessionId !== props.sessionId) return;
-          let ok = false;
-          try {
-            const actions = props.inputActions;
-            // Insert at the caret so an existing draft survives; fall back to
-            // replacing it only when the composer refuses the insertion.
-            if (actions && typeof actions.captureInsertion === 'function' && typeof actions.insertText === 'function') {
-              ok = actions.insertText(pending.text, actions.captureInsertion()) !== false;
-            }
-            if (!ok && actions && typeof actions.setDraft === 'function') {
-              actions.setDraft(pending.text);
-              ok = true;
-            }
-            if (ok && typeof actions.persistDraft === 'function') actions.persistDraft();
-          } catch {
-            ok = false;
-          }
-          // Success hands the composer back to the user: close the panel so the
-          // text they are about to send is visible. Failure stays put and says so.
-          patch(
-            ok
-              ? { pendingDraft: null, draftResult: null, open: false }
-              : { pendingDraft: null, draftResult: { text: pending.text, ok: false } },
-          );
-        },
-        [state.pendingDraft],
       );
 
       return h(

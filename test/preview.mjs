@@ -171,17 +171,11 @@ const CHIPS = `<div class="sc-follow">
   </div>
 </div>`;
 
-const SUGGEST_BLOCK = `<div class="sc-suggest">
-    <div class="sc-suggest-head">建议这样回复</div>
-    <div class="sc-suggest-body">先别继续改样式了，跑一遍 lint 看看语法有没有问题。</div>
-    <div class="sc-suggest-foot"><button type="button" class="sc-suggest-btn">填入输入框</button><span class="sc-suggest-hint">只填进输入框，发不发由你决定。</span></div>
-  </div>`;
-
 function body(options) {
   const { overviewState, chat } = options;
   const chatHtml = chat
     ? `<div class="sc-user">我该不该打断它？</div>
-  <div class="sc-bot"><div class="sc-md"><p>它已经连着两次改同一个文件，可以先让它自查一轮。</p>${SUGGEST_BLOCK}</div></div>`
+  <div class="sc-bot"><div class="sc-md"><p>它已经连着两次改同一个文件，可以先让它自查一轮。</p></div></div>`
     : CHIPS;
   return `<div class="sc-body"><div class="sc-list">
     ${overview(overviewState || 'done')}

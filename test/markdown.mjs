@@ -103,7 +103,7 @@ check('an unterminated fence still renders as code (streaming)', () => {
   assert.equal(blocks[1].code, 'const a = 1;');
 });
 
-check('the reply fence keeps its language tag for the draft card', () => {
+check('a fenced block keeps its language tag, and its body verbatim', () => {
   const blocks = parseMarkdown('可以这样回它：\n```reply\n先跑一遍 lint 再改样式。\n```');
   assert.deepEqual(kinds(blocks), ['p', 'code']);
   assert.equal(blocks[1].lang, 'reply');
