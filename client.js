@@ -131,6 +131,61 @@ window.__ModuleLoader__.load({
     }
     //#endregion threads
 
+    //#region overview
+    /**
+     * The overview is the panel's main content now: opening it answers "how is
+     * it going" with no typing. It is written once per Session state, then kept
+     * on screen — a summary is never rewritten under the reader's eyes. When the
+     * Session moves on, the old text is marked stale and one click replaces it.
+     */
+    const OVERVIEW_TTL_MS = 90 * 1000;
+
+    /** The identity of the Session state a summary describes. */
+    function overviewKey(status) {
+      if (!status) return '';
+      const progress = status.progress || {};
+      return [
+        status.running ? 'run' : 'idle',
+        Number(progress.turn) || 0,
+        Number(progress.step) || 0,
+        status.phase || '',
+      ].join('|');
+    }
+
+    /** True when the summary still describes an earlier turn/step. */
+    function isOverviewStale(overview, status) {
+      if (!overview || !overview.text || overview.streaming || overview.error) return false;
+      if (!status || !overview.key) return false;
+      return overview.key !== overviewKey(status);
+    }
+
+    /** True when the cached summary still answers for this Session, cheaply. */
+    function canReuseOverview(overview, sessionId, status, now) {
+      if (!overview || !overview.text || overview.error || overview.streaming) return false;
+      if (overview.sessionId !== sessionId) return false;
+      if (overview.key !== overviewKey(status)) return false;
+      return (Number(now) || Date.now()) - overview.at < OVERVIEW_TTL_MS;
+    }
+
+    /** HH:MM, so the reader can tell how recent the summary is. */
+    function clockOf(timestamp) {
+      const date = new Date(Number(timestamp) || Date.now());
+      const pad = function (value) {
+        return (value < 10 ? '0' : '') + value;
+      };
+      return pad(date.getHours()) + ':' + pad(date.getMinutes());
+    }
+
+    /** The status line is a one-liner, not prose: no markdown left in it. */
+    function plainStatus(text) {
+      return String(text == null ? '' : text)
+        .replace(/\*\*/g, '')
+        .replace(/`/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    //#endregion overview
+
     const DICTS = {
       en: {
         trigger: 'Companion',
@@ -144,7 +199,7 @@ window.__ModuleLoader__.load({
         running: 'Running',
         idle: 'Idle',
         thinking: 'Reading the session…',
-        empty: 'Ask something about the work in progress.',
+        empty: 'Nothing happening right now.',
         notLive: 'This session is not running in this process any more, so there is nothing live to read.',
         failed: 'The companion could not answer',
         retry: 'Retry',
@@ -174,10 +229,19 @@ window.__ModuleLoader__.load({
         theme_paper: 'Paper',
         theme_blush: 'Blush',
         theme_glass: 'Glass',
+        overviewTitle: 'Right now',
+        overviewAsk:
+          'What is going on right now? Three sentences: what it is doing, how far along it is, and whether anything looks wrong.',
+        overviewRefresh: 'Look again',
+        overviewStale: 'Session moved on',
+        overviewReading: 'Reading the session…',
+        overviewFailed: 'Could not read the session',
+        followup: 'Ask a follow-up (optional)…',
         q1: 'What is it doing right now?',
         q2: 'Which step is it stuck on?',
-        q3: 'In plain Chinese, what is it thinking?',
+        q3: 'What is it thinking, in plain words?',
         q4: 'What has it changed so far?',
+        q5: 'Should I interrupt it?',
       },
       zh: {
         trigger: '随行',
@@ -190,7 +254,7 @@ window.__ModuleLoader__.load({
         running: '运行中',
         idle: '空闲',
         thinking: '正在读取会话…',
-        empty: '关于这次任务，你有什么想问的？',
+        empty: '现在没有新动作。',
         notLive: '这个会话已经不在当前进程里运行了，读不到实时日志。',
         failed: '随行助手没能回答',
         retry: '重试',
@@ -220,10 +284,18 @@ window.__ModuleLoader__.load({
         theme_paper: '宣纸',
         theme_blush: '藕粉',
         theme_glass: '玻璃白',
+        overviewTitle: '现在的情况',
+        overviewAsk: '现在什么情况？三句话说完：在干什么、到哪一步了、有没有问题。',
+        overviewRefresh: '重新看一次',
+        overviewStale: '情况有更新',
+        overviewReading: '正在看…',
+        overviewFailed: '没能读到概况',
+        followup: '追问（可选）…',
         q1: '现在在干什么？',
         q2: '卡在哪一步了？',
         q3: '它在想什么？说人话',
         q4: '到现在改了哪些文件？',
+        q5: '我该不该打断它？',
       },
     };
 
@@ -299,8 +371,6 @@ window.__ModuleLoader__.load({
       '.sc-send:hover:not(:disabled){transform:translateY(-1px);}',
       '.sc-send:disabled{opacity:.38;cursor:default;}',
       '.sc-send.sc-stop{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);}',
-      '.sc-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10.5px;color:var(--dsw-alias-label-secondary);}',
-      '.sc-meta span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
       /* ---- trigger -------------------------------------------------------- */
       '.sc-trigger{appearance:none;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;height:26px;padding:0 8px 0 7px;border-radius:8px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;transition:background .12s ease,color .12s ease;}',
       '.sc-trigger:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
@@ -354,7 +424,7 @@ window.__ModuleLoader__.load({
       'body[data-ds-dark-theme] .sc-md pre{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.08);}',
       '.sc-md :not(pre)>code{background:rgba(15,23,42,.05);border-color:rgba(15,23,42,.06);}',
       'body[data-ds-dark-theme] .sc-md :not(pre)>code{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.09);}',
-      '.sc-foot{background:transparent;border-top:0;padding:12px 18px 14px;position:relative;}',
+      '.sc-foot{background:transparent;border-top:0;padding:10px 18px 12px;position:relative;}',
       '.sc-foot::before{content:"";position:absolute;left:18px;right:18px;top:0;height:1px;background:linear-gradient(90deg,rgba(15,23,42,0),rgba(15,23,42,.07) 20%,rgba(15,23,42,.07) 80%,rgba(15,23,42,0));}',
       'body[data-ds-dark-theme] .sc-foot::before{background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.09) 20%,rgba(255,255,255,.09) 80%,rgba(255,255,255,0));}',
       '.sc-input{background:rgba(255,255,255,.72);border:1px solid rgba(15,23,42,.08);border-radius:12px;transition:border-color .14s ease,box-shadow .14s ease,background .14s ease;}',
@@ -365,7 +435,26 @@ window.__ModuleLoader__.load({
       '.sc-send:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 10px 22px -8px rgba(91,140,255,.75);}',
       '.sc-send:disabled{background:transparent;border:1px solid rgba(15,23,42,.10);color:var(--dsw-alias-label-secondary);box-shadow:none;opacity:1;}',
       'body[data-ds-dark-theme] .sc-send:disabled{border-color:rgba(255,255,255,.12);}',
-      '.sc-meta{font-size:10.5px;opacity:.9;padding:0 1px;}',
+      /* ---- overview: the answer to "how is it going" --------------------- */
+      '.sc-ov{position:relative;align-self:stretch;border:1px solid var(--sc-ov-bd);border-radius:14px;padding:10px 12px 12px;background:var(--sc-ov-bg);}',
+      '.sc-ov-head{display:flex;align-items:center;gap:6px;margin:0 0 6px;}',
+      '.sc-ov-title{font-size:10.5px;letter-spacing:.06em;color:var(--dsw-alias-label-secondary);flex:none;}',
+      '.sc-ov-time{font-size:10.5px;color:var(--dsw-alias-label-secondary);opacity:.62;flex:none;font-variant-numeric:tabular-nums;}',
+      '.sc-ov-btn{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex:none;opacity:.72;transition:opacity .12s ease,background .12s ease;}',
+      '.sc-ov-btn:hover:not(:disabled){opacity:1;background:var(--dsw-alias-bg-layer-2);}',
+      '.sc-ov-btn:disabled{opacity:.34;cursor:default;}',
+      '.sc-ov-btn.is-busy svg{animation:sc-spin .9s linear infinite;}',
+      '@keyframes sc-spin{to{transform:rotate(360deg)}}',
+      '.sc-ov-stale{appearance:none;border:1px solid var(--sc-ov-bd);background:transparent;color:var(--sc-accent);font:inherit;font-size:10.5px;height:20px;padding:0 8px;border-radius:999px;cursor:pointer;flex:none;transition:background .12s ease;}',
+      '.sc-ov-stale:hover{background:color-mix(in srgb,var(--sc-accent) 10%,transparent);}',
+      '[data-ds-dark-theme] .sc-ov-stale{color:var(--sc-d-accent);}',
+      '.sc-ov-body{font-size:13px;line-height:1.78;color:var(--dsw-alias-label-primary);}',
+      '.sc-ov-body .sc-md p{margin:0;}',
+      '.sc-ov-pending{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dsw-alias-label-secondary);}',
+      '.sc-ov-error{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dsw-alias-label-secondary);}',
+      '.sc-follow{display:flex;flex-direction:column;gap:9px;}',
+      '.sc-chips-row{display:flex;flex-wrap:wrap;gap:6px;}',
+      '.sc-chip-sm{font-size:11.5px;padding:5px 9px;border-radius:9px;}',
     ].join('\n');
 
     /* ------------------------------------------------------------------ *
@@ -391,6 +480,8 @@ window.__ModuleLoader__.load({
       '[data-ds-dark-theme] .sc-send{background-color:var(--sc-d-accent);box-shadow:0 10px 22px -10px var(--sc-d-accent-glow);}',
       '.sc-input:focus{border-color:var(--sc-focus-bd);box-shadow:0 0 0 3px var(--sc-focus-ring);}',
       '[data-ds-dark-theme] .sc-input:focus{border-color:var(--sc-d-focus-bd);box-shadow:0 0 0 3px var(--sc-d-focus-ring);}',
+      '.sc-panel{--sc-ov-bg:color-mix(in srgb,var(--sc-accent) 5%,transparent);--sc-ov-bd:color-mix(in srgb,var(--sc-accent) 15%,transparent);}',
+      '[data-ds-dark-theme] .sc-panel{--sc-ov-bg:color-mix(in srgb,var(--sc-d-accent) 10%,transparent);--sc-ov-bd:color-mix(in srgb,var(--sc-d-accent) 20%,transparent);}',
 
       /* 1 · 雾蓝 — pale blue sheet, steel accent */
       '[data-palette="mist"]{--sc-accent:#4a76a8;--sc-glass-1:rgba(249,252,255,.97);--sc-glass-2:rgba(238,245,253,.95);--sc-glass-3:rgba(240,246,254,.96);--sc-edge:rgba(255,255,255,.72);--sc-wash:rgba(96,150,210,.18);--sc-user:rgba(74,118,168,.11);--sc-shadow:rgba(28,44,70,.28);--sc-shadow-2:rgba(28,44,70,.15);--sc-accent-glow:rgba(74,118,168,.5);--sc-d-glass-1:rgba(28,33,41,.95);--sc-d-glass-2:rgba(21,26,33,.93);--sc-d-glass-3:rgba(24,29,37,.94);--sc-d-edge:rgba(255,255,255,.08);--sc-d-wash:rgba(120,160,210,.11);--sc-d-user:rgba(120,160,210,.16);--sc-d-accent:#86aede;--sc-d-accent-glow:rgba(134,174,222,.45);}',
@@ -450,10 +541,8 @@ window.__ModuleLoader__.load({
       '.sc-suggest-hint{font-size:10.5px;color:var(--dsw-alias-label-secondary);}',
 
       /* tone switch */
-      '.sc-meta-left{display:flex;align-items:center;gap:7px;min-width:0;}',
       '.sc-tone{appearance:none;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:10.5px;height:19px;padding:0 7px;border-radius:6px;cursor:pointer;flex:none;transition:color .12s ease,border-color .12s ease,background .12s ease;}',
       '.sc-tone:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);}',
-      '.sc-model{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
     ].join('\n');
 
     /* ------------------------------------------------------------------ *
@@ -705,6 +794,8 @@ window.__ModuleLoader__.load({
       status: null,
       statusFor: '',
       statusError: '',
+      /** The auto-written "how is it going" summary; null until the first ask. */
+      overview: null,
       theme: readTheme(),
       themePicker: false,
       tone: readTone(),
@@ -728,6 +819,7 @@ window.__ModuleLoader__.load({
         status: store.status,
         statusFor: store.statusFor,
         statusError: store.statusError,
+        overview: store.overview,
         theme: store.theme,
         themePicker: store.themePicker,
         tone: store.tone,
@@ -794,33 +886,42 @@ window.__ModuleLoader__.load({
       return store.open ? store.sessionId : store.currentSession;
     }
 
+    async function fetchStatus(id) {
+      const response = await fetch(ROUTE + '/status?session=' + encodeURIComponent(id), {
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
+      if (response.status === 409) return { notLive: true, status: null };
+      if (!response.ok) return null;
+      const json = await response.json();
+      if (!json || !json.ok) return null;
+      return {
+        notLive: false,
+        status: {
+          running: !!json.running,
+          phase: json.phase || '',
+          headline: json.headline || '',
+          model: json.model || '',
+          progress: json.progress || null,
+        },
+      };
+    }
+
     async function pollOnce() {
       const id = pollTarget();
-      if (!id) return;
+      if (!id) return null;
       try {
-        const response = await fetch(ROUTE + '/status?session=' + encodeURIComponent(id), {
-          cache: 'no-store',
-          credentials: 'same-origin',
-        });
-        if (response.status === 409) {
+        const result = await fetchStatus(id);
+        if (!result) return null;
+        if (result.notLive) {
           if (store.open && store.sessionId === id) patch({ statusError: 'session-not-live', status: null });
-          return;
+          return result;
         }
-        if (!response.ok) return;
-        const json = await response.json();
-        if (!json || !json.ok) return;
-        applyStatus(
-          {
-            running: !!json.running,
-            phase: json.phase || '',
-            headline: json.headline || '',
-            model: json.model || '',
-            progress: json.progress || null,
-          },
-          id,
-        );
+        applyStatus(result.status, id);
+        return result;
       } catch {
         /* the Host may be restarting; the next tick retries */
+        return null;
       }
     }
 
@@ -868,11 +969,79 @@ window.__ModuleLoader__.load({
       patch({ busy: false });
     }
 
+    //#region stream
+    /**
+     * One streamed answer over SSE. Shared by the typed follow-up and by the
+     * automatic overview, so frame parsing lives in a single place. Resolves
+     * with { ok } or { ok: false, code, message }; only a cancelled request
+     * throws (AbortError), and the caller decides what that means.
+     */
+    async function requestStream(question, onDelta, signal, history) {
+      const response = await fetch(ROUTE + '/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          sessionId: store.sessionId,
+          question: question,
+          history: Array.isArray(history) ? history : buildHistory(),
+          tone: store.tone,
+        }),
+        signal: signal,
+      });
+
+      if (!response.ok) {
+        let detail = 'http-' + response.status;
+        try {
+          const json = await response.json();
+          if (json && json.error) detail = json.error;
+        } catch {
+          /* keep the status code */
+        }
+        return { ok: false, code: detail === 'session-not-live' ? 'not-live' : 'request', message: detail };
+      }
+      if (!response.body || typeof response.body.getReader !== 'function') {
+        return { ok: false, code: 'request', message: 'stream-unsupported' };
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let rest = '';
+      let failure = null;
+
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        rest += decoder.decode(chunk.value, { stream: true });
+        let split = rest.indexOf('\n\n');
+        while (split >= 0) {
+          const frame = rest.slice(0, split);
+          rest = rest.slice(split + 2);
+          for (const line of frame.split('\n')) {
+            if (line.slice(0, 5) !== 'data:') continue;
+            const payload = line.slice(5).trim();
+            if (!payload) continue;
+            let event;
+            try {
+              event = JSON.parse(payload);
+            } catch {
+              continue;
+            }
+            if (event.t === 'delta' && event.text) onDelta(event.text);
+            else if (event.t === 'error') failure = { code: event.code || 'failed', message: event.message || '' };
+          }
+          split = rest.indexOf('\n\n');
+        }
+      }
+      if (failure) return { ok: false, code: failure.code, message: failure.message };
+      return { ok: true };
+    }
+    //#endregion stream
+
     async function ask(question) {
       const text = String(question || '').trim();
       if (!text || store.busy || !store.sessionId) return;
 
-      const history = buildHistory();
       const userMessage = { id: ++seq, role: 'user', text: text };
       const botMessage = { id: ++seq, role: 'assistant', text: '' };
       store.messages.push(userMessage, botMessage);
@@ -895,61 +1064,16 @@ window.__ModuleLoader__.load({
       }
 
       try {
-        const response = await fetch(ROUTE + '/ask', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ sessionId: store.sessionId, question: text, history: history, tone: store.tone }),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          let detail = 'http-' + response.status;
-          try {
-            const json = await response.json();
-            if (json && json.error) detail = json.error;
-          } catch {
-            /* keep the status code */
-          }
-          fail(detail, 'request', text);
-          return;
-        }
-        if (!response.body || typeof response.body.getReader !== 'function') {
-          fail('stream-unsupported', 'request', text);
-          return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let rest = '';
-
-        for (;;) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          rest += decoder.decode(chunk.value, { stream: true });
-          let split = rest.indexOf('\n\n');
-          while (split >= 0) {
-            const frame = rest.slice(0, split);
-            rest = rest.slice(split + 2);
-            for (const line of frame.split('\n')) {
-              if (line.slice(0, 5) !== 'data:') continue;
-              const payload = line.slice(5).trim();
-              if (!payload) continue;
-              let event;
-              try {
-                event = JSON.parse(payload);
-              } catch {
-                continue;
-              }
-              if (event.t === 'delta' && event.text) buffered += event.text;
-              else if (event.t === 'error') fail(event.message || '', event.code, text);
-              else if (event.t === 'done') flush(true);
-            }
-            split = rest.indexOf('\n\n');
-          }
-          flush(false);
-        }
+        const result = await requestStream(
+          text,
+          function (delta) {
+            buffered += delta;
+            flush(false);
+          },
+          controller.signal,
+        );
         flush(true);
+        if (!result.ok) fail(result.message, result.code, text);
       } catch (error) {
         if (error && error.name === 'AbortError') {
           if (!botMessage.text) botMessage.text = '（' + t('stop') + '）';
@@ -985,16 +1109,122 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /* ------------------------------------------------------ overview flow */
+
+    let overviewController = null;
+
+    function statusOfOpenSession() {
+      return store.statusFor === store.sessionId ? store.status : null;
+    }
+
+    /**
+     * Write the overview for the open Session. One click is the whole
+     * interaction: no question, no history, no tools — the fixed "what is going
+     * on" ask streams into the card and leaves the chat thread untouched.
+     */
+    async function refreshOverview() {
+      const id = store.sessionId;
+      if (!id) return;
+      if (overviewController) {
+        try {
+          overviewController.abort();
+        } catch {
+          /* already gone */
+        }
+      }
+      const controller = new AbortController();
+      overviewController = controller;
+
+      const view = {
+        sessionId: id,
+        key: overviewKey(statusOfOpenSession()),
+        text: '',
+        at: Date.now(),
+        streaming: true,
+        error: '',
+      };
+      patch({ overview: view });
+
+      let buffered = '';
+      let lastEmitAt = 0;
+      const flush = function (force) {
+        const now = Date.now();
+        if (!force && now - lastEmitAt < EMIT_MS) return;
+        if (buffered) {
+          view.text += buffered;
+          buffered = '';
+        }
+        lastEmitAt = now;
+        emit();
+      };
+
+      try {
+        const result = await requestStream(
+          t('overviewAsk'),
+          function (delta) {
+            buffered += delta;
+            flush(false);
+          },
+          controller.signal,
+          // The overview is written from the Session log alone; dragging the
+          // chat thread along would only bias it toward older questions.
+          [],
+        );
+        flush(true);
+        if (!result.ok) {
+          view.error = result.code === 'not-live' ? 'not-live' : result.message || result.code || 'failed';
+          if (result.code === 'not-live') patch({ statusError: 'session-not-live' });
+        }
+      } catch (error) {
+        if (!error || error.name !== 'AbortError') view.error = (error && error.message) || 'network';
+      } finally {
+        view.streaming = false;
+        if (overviewController === controller) overviewController = null;
+        emit();
+      }
+    }
+
+    /**
+     * Opening the panel is the click that answers "how is it going": reuse a
+     * summary that still describes this state, otherwise ask once. A Session
+     * that is not live is not asked at all — that would only burn a model call.
+     */
+    async function primeOverview() {
+      const id = store.sessionId;
+      if (!id) return;
+      const running = store.overview;
+      // Already being written for this Session: reopening must not restart it.
+      if (running && running.sessionId === id && running.streaming) return;
+      const result = await pollOnce();
+      // The reader may have closed the panel while the status request was in
+      // flight; asking then would spend a call nobody asked for.
+      if (!store.open || store.sessionId !== id) return;
+      if (result && result.notLive) return;
+      if (result && canReuseOverview(store.overview, id, result.status, Date.now())) return;
+      void refreshOverview();
+    }
+
     function openCompanion(sessionId) {
       // Threads are per Session: stash the one being left, restore the one
       // being opened, so switching back and forth keeps each conversation.
       if (store.sessionId !== sessionId) {
         persistThread();
         store.messages = restoreThread(sessionId);
+        // A summary belongs to one Session: never let it land on another.
+        if (overviewController) {
+          try {
+            overviewController.abort();
+          } catch {
+            /* already gone */
+          }
+          overviewController = null;
+        }
+        if (store.overview && store.overview.sessionId !== sessionId) store.overview = null;
       }
       patch({ open: true, sessionId: sessionId, statusError: '', draftResult: null });
       ensurePolling();
-      void pollOnce();
+      // No typing required: the panel opens onto the current situation.
+      void primeOverview();
     }
 
     function closeCompanion() {
@@ -1091,6 +1321,18 @@ window.__ModuleLoader__.load({
       }),
     );
 
+    const ICON_REFRESH = h(
+      'svg',
+      { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+      h('path', {
+        d: 'M13 8a5 5 0 1 1-1.62-3.66M13 2.6V5h-2.4',
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      }),
+    );
+
     function Suggestion(props) {
       const state = useStore();
       const failed = state.draftResult && state.draftResult.text === props.text && !state.draftResult.ok;
@@ -1120,8 +1362,11 @@ window.__ModuleLoader__.load({
 
     function CompanionTrigger(props) {
       const state = useStore();
-      const live = state.statusFor === props.sessionId && state.status && state.status.running;
+      const status = state.statusFor === props.sessionId ? state.status : null;
+      const live = !!(status && status.running);
       const active = state.open && state.sessionId === props.sessionId;
+      // The tooltip alone can answer "how is it going", without even a click.
+      const hint = status ? plainStatus([status.phase, status.headline].filter(Boolean).join(' · ')) : '';
 
       React.useEffect(
         function () {
@@ -1177,7 +1422,7 @@ window.__ModuleLoader__.load({
         'button',
         {
           type: 'button',
-          title: t('trigger'),
+          title: hint ? t('trigger') + ' · ' + hint : t('trigger'),
           'aria-label': t('trigger'),
           'aria-pressed': active ? 'true' : 'false',
           className: 'sc-trigger' + (active ? ' is-active' : ''),
@@ -1221,7 +1466,25 @@ window.__ModuleLoader__.load({
         const node = listRef.current;
         if (!node) return;
         if (stickRef.current) node.scrollTop = node.scrollHeight;
+        // Content that suddenly fits (a short overview) must not keep showing
+        // the "jump to latest" pill.
+        const near = node.scrollHeight - node.scrollTop - node.clientHeight < 56;
+        if (near !== stuck) setStuck(near);
       });
+
+      // Opening the panel is a request for the situation, so it lands on the
+      // overview at the top — not at the bottom of an older conversation.
+      React.useEffect(
+        function () {
+          if (!state.open) return;
+          const node = listRef.current;
+          if (!node) return;
+          node.scrollTop = 0;
+          stickRef.current = false;
+          setStuck(node.scrollHeight - node.clientHeight < 56);
+        },
+        [state.open],
+      );
 
       React.useEffect(
         function () {
@@ -1260,7 +1523,7 @@ window.__ModuleLoader__.load({
       const status = state.statusFor === state.sessionId ? state.status : null;
       const live = !!(status && status.running);
       const phase = status && status.phase ? status.phase : '';
-      const activity = status && status.headline ? status.headline : state.busy ? t('thinking') : t('empty');
+      const activity = status && status.headline ? plainStatus(status.headline) : state.busy ? t('thinking') : t('empty');
 
       const progress = status && status.progress ? status.progress : null;
       const stall = progress && progress.stall ? progress.stall : null;
@@ -1329,6 +1592,134 @@ window.__ModuleLoader__.load({
       });
 
       const empty = state.messages.length === 0;
+      const overview = state.overview && state.overview.sessionId === state.sessionId ? state.overview : null;
+      const stale = isOverviewStale(overview, status);
+
+      /** One click: back to the top and a freshly written situation report. */
+      function refresh() {
+        const node = listRef.current;
+        if (node) node.scrollTop = 0;
+        stickRef.current = false;
+        void refreshOverview();
+      }
+
+      /**
+       * The register belongs with the text it changes: switching it rewrites the
+       * overview in place instead of waiting for the next open.
+       */
+      function toggleTone() {
+        const next = state.tone === 'technical' ? 'plain' : 'technical';
+        writeTone(next);
+        patch({ tone: next });
+        void refreshOverview();
+      }
+
+      function toneButton() {
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: 'sc-tone',
+            title: t('toneHint'),
+            'aria-label': t('toneHint'),
+            'aria-pressed': state.tone === 'technical' ? 'true' : 'false',
+            onClick: toggleTone,
+          },
+          state.tone === 'technical' ? t('toneTechnical') : t('tonePlain'),
+        );
+      }
+
+      function overviewBlock() {
+        if (!overview) return null;
+        if (state.statusError === 'session-not-live') return null;
+        const dead = overview.error === 'not-live';
+        const body = dead
+          ? h('div', { className: 'sc-ov-error' }, t('notLive'))
+          : overview.error
+            ? h(
+                'div',
+                { className: 'sc-ov-error' },
+                h('span', null, t('overviewFailed')),
+                h('button', { type: 'button', className: 'sc-retry', onClick: refresh }, t('retry')),
+              )
+            : overview.text
+              ? h(
+                  React.Fragment,
+                  null,
+                  h(Markdown, { text: overview.text }),
+                  overview.streaming ? h('span', { className: 'sc-caret', 'aria-hidden': 'true' }) : null,
+                )
+              : h(
+                  'span',
+                  { className: 'sc-ov-pending' },
+                  h('span', null, t('overviewReading')),
+                  h('span', { className: 'sc-typing', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
+                );
+
+        return h(
+          'section',
+          { className: 'sc-ov', 'aria-label': t('overviewTitle') },
+          h(
+            'div',
+            { className: 'sc-ov-head' },
+            h('span', { className: 'sc-ov-title' }, t('overviewTitle')),
+            overview.text && !overview.streaming
+              ? h('span', { className: 'sc-ov-time' }, clockOf(overview.at))
+              : null,
+            h('span', { className: 'sc-spacer' }),
+            toneButton(),
+            stale
+              ? h('button', { type: 'button', className: 'sc-ov-stale', onClick: refresh }, t('overviewStale'))
+              : null,
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'sc-ov-btn' + (overview.streaming ? ' is-busy' : ''),
+                title: t('overviewRefresh'),
+                'aria-label': t('overviewRefresh'),
+                disabled: overview.streaming,
+                onClick: refresh,
+              },
+              ICON_REFRESH,
+            ),
+          ),
+          h(
+            'div',
+            { className: 'sc-ov-body', role: 'status', 'aria-live': overview.streaming ? 'off' : 'polite' },
+            body,
+          ),
+        );
+      }
+
+      /** Typing is optional now, so the composer is a follow-up affordance. */
+      function followBlock() {
+        return h(
+          'div',
+          { className: 'sc-follow' },
+          h(
+            'div',
+            { className: 'sc-chips-row' },
+            ['q2', 'q4', 'q5'].map(function (key) {
+              return h(
+                'button',
+                {
+                  key: key,
+                  type: 'button',
+                  className: 'sc-chip sc-chip-sm',
+                  disabled: state.busy,
+                  onClick: function () {
+                    stickRef.current = true;
+                    setStuck(true);
+                    void ask(t(key));
+                  },
+                },
+                t(key),
+              );
+            }),
+          ),
+        );
+      }
 
       return h(
         'div',
@@ -1343,9 +1734,21 @@ window.__ModuleLoader__.load({
               className: 'sc-dot' + (live ? ' is-live' : '') + (stall ? ' is-warn' : ''),
               'aria-hidden': 'true',
             }),
-            h('div', { className: 'sc-title' }, t('title')),
+            h('div', { className: 'sc-title', title: t('footNote') }, t('title')),
             h('span', { className: 'sc-spacer' }),
             h('span', { className: 'sc-badge' }, live ? t('running') : t('idle')),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'sc-ov-btn' + (overview && overview.streaming ? ' is-busy' : ''),
+                title: t('overviewRefresh'),
+                'aria-label': t('overviewRefresh'),
+                disabled: !overview || overview.streaming,
+                onClick: refresh,
+              },
+              ICON_REFRESH,
+            ),
             state.messages.length
               ? h(
                   'button',
@@ -1457,34 +1860,8 @@ window.__ModuleLoader__.load({
               },
             },
             state.statusError === 'session-not-live' ? h('div', { className: 'sc-note' }, t('notLive')) : null,
-            empty && !state.statusError
-              ? h(
-                  'div',
-                  null,
-                  h('div', { className: 'sc-intro' }, t('intro')),
-                  h(
-                    'div',
-                    { className: 'sc-chips' },
-                    ['q1', 'q2', 'q3', 'q4'].map(function (key) {
-                      return h(
-                        'button',
-                        {
-                          key: key,
-                          type: 'button',
-                          className: 'sc-chip',
-                          disabled: state.busy,
-                          onClick: function () {
-                            stickRef.current = true;
-                            setStuck(true);
-                            void ask(t(key));
-                          },
-                        },
-                        t(key),
-                      );
-                    }),
-                  ),
-                )
-              : null,
+            overviewBlock(),
+            empty && !state.statusError ? followBlock() : null,
             rows,
           ),
           !stuck
@@ -1516,8 +1893,8 @@ window.__ModuleLoader__.load({
               ref: inputRef,
               rows: 1,
               value: draft,
-              placeholder: t('placeholder'),
-              'aria-label': t('placeholder'),
+              placeholder: t('followup'),
+              'aria-label': t('followup'),
               onChange: function (event) {
                 setDraft(event.target.value);
               },
@@ -1546,32 +1923,6 @@ window.__ModuleLoader__.load({
                   },
                   ICON_SEND,
                 ),
-          ),
-          h(
-            'div',
-            { className: 'sc-meta' },
-            h(
-              'span',
-              { className: 'sc-meta-left' },
-              h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'sc-tone',
-                  title: t('toneHint'),
-                  'aria-label': t('toneHint'),
-                  'aria-pressed': state.tone === 'technical' ? 'true' : 'false',
-                  onClick: function () {
-                    const next = state.tone === 'technical' ? 'plain' : 'technical';
-                    writeTone(next);
-                    patch({ tone: next });
-                  },
-                },
-                state.tone === 'technical' ? t('toneTechnical') : t('tonePlain'),
-              ),
-              status && status.model ? h('span', { className: 'sc-model', title: status.model }, status.model) : null,
-            ),
-            h('span', null, t('footNote')),
           ),
         ),
       );
@@ -1638,7 +1989,9 @@ window.__ModuleLoader__.load({
             return function () {
               stopPolling();
               if (abortController) abortController.abort();
+              if (overviewController) overviewController.abort();
               store.messages = [];
+              store.overview = null;
               store.open = false;
               listeners.clear();
             };

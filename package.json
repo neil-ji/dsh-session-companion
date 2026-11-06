@@ -1,10 +1,10 @@
 {
   "name": "@local/dsh-session-companion",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "A read-only chat channel that answers questions about a running session while its agent is too busy to reply.",
+  "description": "One click, no typing: a read-only overview of a running session, written by a separate tool-less model call.",
   "author": "Neil Ji",
   "repository": {
     "type": "git",

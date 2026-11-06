@@ -77,6 +77,7 @@ const HEAD = (dark) => `<!doctype html>
 const CLOSE_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 const SEND_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3.6M8 3.6L4 7.6M8 3.6l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const TRASH_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.8 4.6h10.4M6.3 4.6V3h3.4v1.6M4.3 4.6l.7 8.4h6L11.7 4.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const REFRESH_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.62-3.66M13 2.6V5h-2.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 const THEMES = ['aurora', 'mist', 'celadon', 'paper', 'blush', 'glass'];
 const THEME_LABELS = {
@@ -91,19 +92,22 @@ const THEME_LABELS = {
 const PROGRESS_NORMAL = `<div class="sc-progress"><span class="sc-pitem">待办 6/9</span><span class="sc-pitem"><span class="sc-psep">·</span>4 个文件</span><span class="sc-pitem"><span class="sc-psep">·</span>48.3k tok</span><span class="sc-pitem"><span class="sc-psep">·</span>已跑 12 分</span></div>`;
 const PROGRESS_STALL = `<div class="sc-progress is-warn"><span class="sc-pitem sc-pwarn">可能卡住了</span><span class="sc-psep">·</span><span class="sc-pitem">连续 3 次工具调用失败</span></div>`;
 
-function head(live, theme, picker, progress, clearState) {
+function head(live, theme, picker, progress, clearState, overview) {
   const dotClass = 'sc-dot' + (live ? ' is-live' : '') + (progress === 'stall' ? ' is-warn' : '');
   const progressHtml = progress === 'stall' ? PROGRESS_STALL : progress === 'normal' ? PROGRESS_NORMAL : '';
   const clearHtml =
     clearState === 'armed'
       ? '<button type="button" class="sc-clear is-armed" aria-label="确认清空？">确认清空？</button>'
-      : '<button type="button" class="sc-clear" aria-label="清空本会话的问答记录">' + TRASH_ICON + '</button>';
+      : clearState === 'idle'
+        ? '<button type="button" class="sc-clear" aria-label="清空本会话的问答记录">' + TRASH_ICON + '</button>'
+        : '';
   return `<div class="sc-head">
   <div class="sc-head-row">
     <span class="${dotClass}"></span>
     <div class="sc-title">随行问答</div>
     <span class="sc-spacer"></span>
     <span class="sc-badge">${live ? '运行中' : '空闲'}</span>
+    <button type="button" class="sc-ov-btn${overview === 'stream' ? ' is-busy' : ''}" aria-label="重新看一次" ${overview === 'stream' ? 'disabled' : ''}>${REFRESH_ICON}</button>
     ${clearHtml}
     <button type="button" class="sc-theme-btn${picker ? ' is-open' : ''}" aria-label="切换材质"><i></i></button>
     <button type="button" class="sc-close" aria-label="关闭">${CLOSE_ICON}</button>
@@ -127,12 +131,45 @@ function head(live, theme, picker, progress, clearState) {
 function foot(value) {
   return `<div class="sc-foot">
   <div class="sc-inputwrap">
-    <textarea class="sc-input" rows="1" placeholder="问问它现在在干嘛…" aria-label="提问">${value}</textarea>
+    <textarea class="sc-input" rows="1" placeholder="追问（可选）…" aria-label="追问">${value}</textarea>
     <button type="button" class="sc-send"${value ? '' : ' disabled'} aria-label="发送">${SEND_ICON}</button>
   </div>
-    <div class="sc-meta"><span class="sc-meta-left"><button type="button" class="sc-tone">说人话</button><span class="sc-model">deepseek-v4.1-flash</span></span><span>只读 · 不打扰主 Agent</span></div>
 </div>`;
 }
+
+const SUMMARY = '它在给「随行问答」换视觉基调：已经改完两个文件，正在跑一轮自测。目前没有报错，也还没偏离你的要求。';
+
+function overview(state) {
+  if (state === 'none') return '';
+  const body =
+    state === 'stream'
+      ? '<span class="sc-ov-pending"><span>正在看…</span><span class="sc-typing"><i></i><i></i><i></i></span></span>'
+      : state === 'error'
+        ? '<div class="sc-ov-error"><span>没能读到概况</span><button type="button" class="sc-retry">重试</button></div>'
+        : `<div class="sc-md"><p>${SUMMARY}${state === 'streaming-text' ? '<span class="sc-caret"></span>' : ''}</p></div>`;
+  const time = state === 'stream' || state === 'error' ? '' : '<span class="sc-ov-time">14:32</span>';
+  const stale =
+    state === 'stale' ? '<button type="button" class="sc-ov-stale">情况有更新</button>' : '';
+  return `<section class="sc-ov" aria-label="现在的情况">
+    <div class="sc-ov-head">
+      <span class="sc-ov-title">现在的情况</span>
+      ${time}
+      <span class="sc-spacer"></span>
+      <button type="button" class="sc-tone" aria-label="切换回答的语气">说人话</button>
+      ${stale}
+      <button type="button" class="sc-ov-btn${state === 'stream' ? ' is-busy' : ''}" aria-label="重新看一次" ${state === 'stream' ? 'disabled' : ''}>${REFRESH_ICON}</button>
+    </div>
+    <div class="sc-ov-body" role="status">${body}</div>
+  </section>`;
+}
+
+const CHIPS = `<div class="sc-follow">
+  <div class="sc-chips-row">
+    <button type="button" class="sc-chip sc-chip-sm">卡在哪一步了？</button>
+    <button type="button" class="sc-chip sc-chip-sm">到现在改了哪些文件？</button>
+    <button type="button" class="sc-chip sc-chip-sm">我该不该打断它？</button>
+  </div>
+</div>`;
 
 const SUGGEST_BLOCK = `<div class="sc-suggest">
     <div class="sc-suggest-head">建议这样回复</div>
@@ -140,85 +177,54 @@ const SUGGEST_BLOCK = `<div class="sc-suggest">
     <div class="sc-suggest-foot"><button type="button" class="sc-suggest-btn">填入输入框</button><span class="sc-suggest-hint">只填进输入框，发不发由你决定。</span></div>
   </div>`;
 
-const CHAT_BODY = `<div class="sc-body"><div class="sc-list">
-  <div class="sc-user">现在在干什么？</div>
-  <div class="sc-bot"><div class="sc-md"><p>它在给「随行问答」换视觉基调，顺手把配色做成了可切换的调色板。现在你看到的是其中一套。<span class="sc-caret"></span></p></div></div>
-  <div class="sc-user">我该不该打断它？</div>
-  <div class="sc-bot"><div class="sc-md"><p>它已经连着两次改同一个文件，可以先让它自查一轮。</p>${SUGGEST_BLOCK}</div></div>
-</div></div>`;
-
-const EMPTY_BODY = `<div class="sc-body"><div class="sc-list">
-  <div class="sc-intro">一个只读当前会话的独立小助手：没有工具、改不了任何东西，也不会打扰正在干活的 Agent。</div>
-  <div class="sc-chips">
-    <button class="sc-chip">现在在干什么？</button>
-    <button class="sc-chip">卡在哪一步了？</button>
-    <button class="sc-chip">它在想什么？说人话</button>
-    <button class="sc-chip">到现在改了哪些文件？</button>
-  </div>
-</div></div>`;
+function body(options) {
+  const { overviewState, chat } = options;
+  const chatHtml = chat
+    ? `<div class="sc-user">我该不该打断它？</div>
+  <div class="sc-bot"><div class="sc-md"><p>它已经连着两次改同一个文件，可以先让它自查一轮。</p>${SUGGEST_BLOCK}</div></div>`
+    : CHIPS;
+  return `<div class="sc-body"><div class="sc-list">
+    ${overview(overviewState || 'done')}
+    ${chatHtml}
+  </div></div>`;
+}
 
 function page(options) {
-  const { dark, body, live, value, palette, picker, progress, clearState } = options;
+  const { dark, live, value, palette, picker, progress, clearState, overviewState, chat } = options;
   return (
     HEAD(dark) +
     `<div class="sc-panel" role="dialog" aria-label="随行问答" data-palette="${palette}">` +
-    head(live, palette, !!picker, progress, clearState) +
-    body +
+    head(live, palette, !!picker, progress, clearState, overviewState) +
+    body({ overviewState, chat }) +
     foot(value) +
     `</div></div></body></html>`
   );
+}
+
+function write(name, options) {
+  fs.writeFileSync(path.join(here, 'preview-' + name + '.html'), page(options), 'utf8');
+  return 1;
 }
 
 let written = 0;
 for (const palette of PALETTES) {
   // A typed draft keeps the send button in its enabled (accent) state so the
   // palette's strongest color is actually visible.
-  const html = page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette });
-  fs.writeFileSync(path.join(here, 'preview-' + palette + '.html'), html, 'utf8');
-  written += 1;
-  const darkHtml = page({ dark: true, body: CHAT_BODY, live: true, value: '下一步呢？', palette });
-  fs.writeFileSync(path.join(here, 'preview-' + palette + '-dark.html'), darkHtml, 'utf8');
-  written += 1;
+  written += write(palette, { dark: false, live: true, value: '下一步呢？', palette, overviewState: 'done', chat: false, progress: 'normal', clearState: 'idle' });
+  written += write(palette + '-dark', { dark: true, live: true, value: '下一步呢？', palette, overviewState: 'done', chat: false, progress: 'normal', clearState: 'idle' });
 }
-fs.writeFileSync(
-  path.join(here, 'preview-picker.html'),
-  page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', picker: true }),
-  'utf8',
-);
-fs.writeFileSync(
-  path.join(here, 'preview-picker-dark.html'),
-  page({ dark: true, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', picker: true }),
-  'utf8',
-);
-written += 2;
-fs.writeFileSync(
-  path.join(here, 'preview-progress.html'),
-  page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', progress: 'normal' }),
-  'utf8',
-);
-fs.writeFileSync(
-  path.join(here, 'preview-progress-dark.html'),
-  page({ dark: true, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', progress: 'normal' }),
-  'utf8',
-);
-fs.writeFileSync(
-  path.join(here, 'preview-stall.html'),
-  page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', progress: 'stall' }),
-  'utf8',
-);
-written += 3;
-fs.writeFileSync(
-  path.join(here, 'preview-clear.html'),
-  page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', progress: 'normal', clearState: 'idle' }),
-  'utf8',
-);
-fs.writeFileSync(
-  path.join(here, 'preview-clear-armed.html'),
-  page({ dark: false, body: CHAT_BODY, live: true, value: '下一步呢？', palette: 'aurora', progress: 'normal', clearState: 'armed' }),
-  'utf8',
-);
-written += 2;
-fs.writeFileSync(path.join(here, 'preview-aurora-empty.html'), page({ dark: false, body: EMPTY_BODY, live: false, value: '', palette: 'aurora' }), 'utf8');
-written += 1;
+written += write('picker', { dark: false, live: true, value: '下一步呢？', palette: 'aurora', picker: true, overviewState: 'done', chat: false, progress: 'normal' });
+written += write('picker-dark', { dark: true, live: true, value: '下一步呢？', palette: 'aurora', picker: true, overviewState: 'done', chat: false, progress: 'normal' });
+written += write('progress', { dark: false, live: true, value: '下一步呢？', palette: 'aurora', overviewState: 'done', chat: false, progress: 'normal' });
+written += write('progress-dark', { dark: true, live: true, value: '下一步呢？', palette: 'aurora', overviewState: 'done', chat: false, progress: 'normal' });
+written += write('stall', { dark: false, live: true, value: '下一步呢？', palette: 'aurora', overviewState: 'done', chat: false, progress: 'stall' });
+written += write('overview', { dark: false, live: true, value: '', palette: 'aurora', overviewState: 'done', chat: false, progress: 'normal', clearState: 'idle' });
+written += write('overview-dark', { dark: true, live: true, value: '', palette: 'aurora', overviewState: 'done', chat: false, progress: 'normal', clearState: 'idle' });
+written += write('overview-stream', { dark: false, live: true, value: '', palette: 'aurora', overviewState: 'stream', chat: false, progress: 'normal' });
+written += write('overview-stale', { dark: false, live: true, value: '', palette: 'aurora', overviewState: 'stale', chat: true, progress: 'normal', clearState: 'idle' });
+written += write('overview-error', { dark: false, live: true, value: '', palette: 'aurora', overviewState: 'error', chat: false, progress: 'normal' });
+written += write('overview-idle', { dark: false, live: false, value: '', palette: 'aurora', overviewState: 'done', chat: false, progress: null });
+written += write('clear', { dark: false, live: true, value: '下一步呢？', palette: 'aurora', overviewState: 'done', chat: true, progress: 'normal', clearState: 'idle' });
+written += write('clear-armed', { dark: false, live: true, value: '下一步呢？', palette: 'aurora', overviewState: 'done', chat: true, progress: 'normal', clearState: 'armed' });
 
 console.log('wrote ' + written + ' preview pages; css bytes = ' + pluginCss.length);
