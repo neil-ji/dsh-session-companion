@@ -80,7 +80,7 @@ git clone https://github.com/neil-ji/dsh-session-companion.git
 
 ## 进度与卡住检测
 
-面板标题下面多一行**进度带**，数据全部来自会话日志，不花模型调用，每 6 秒随 `/status` 刷新一次：
+面板标题下面多一行**进度带**，数据全部来自会话日志，不花模型调用；面板开着时随 `/status` 每 6 秒刷新一次（关掉面板降到 30 秒，只为悬浮提示；窗口在后台时不轮询）：
 
 ```
 第9轮 第43步 · 正在执行 pwsh
@@ -91,7 +91,7 @@ git clone https://github.com/neil-ji/dsh-session-companion.git
 | --- | --- |
 | 待办 完成/总数 | 最近一次 `todo_write` 的参数（主 Agent 自己维护的清单） |
 | 改动文件数 | `write` / `edit` / `multi_edit` / `apply_patch` 调用里出现过的 `file_path`，去重 |
-| tok | `ctx.tokenMeter.measure()` 的上下文压力，最多每 15 秒采样一次（它是 O(surface) 的） |
+| tok | `ctx.tokenMeter.measure()` 的上下文压力，最多每 15 秒采样一次，且**只在面板打开时**采样（它是 O(surface) 的，关着的面板不为它付钱） |
 | 已跑 | 当前 `turn/start` 到现在 |
 
 会话看起来不对劲时，这一行换成琥珀色告警，状态点同时变色：
@@ -166,7 +166,7 @@ Host 半边把会话日志整理成一份摘要再交给模型：
 - 模型请求里**不带 `tools`**，因此不可能产生工具调用；
 - 不调用 `agent.followup()` / `agent.inject()`，不排队、不插话；
 - 路由头需要一个会话 id，但用的是合成 id（`session-companion-…`），不是你的真实会话 id——随行问答的 token 不会被算到主会话头上；
-- 前端只在面板打开或入口挂载时轮询 `GET /session-companion/status`，6 秒一次，纯本地；
+- 前端轮询 `GET /session-companion/status`，纯本地：面板开着 6 秒一次，关着 30 秒一次，窗口不可见时不发请求；同一次请求不会被叠加（在途时复用）；会话不在本进程时按 409 的最便宜路径重试；
 - 自动概况**每次打开最多一次**模型调用：同一步骤 + 90 秒内复用，读取失败的会话直接跳过。
 
 ## 配置
@@ -195,7 +195,7 @@ Host 半边把会话日志整理成一份摘要再交给模型：
 
 只挂在本机 Web 服务上，仅接受同源请求，请求体上限 96 KiB。
 
-- `GET /session-companion/status?session=<id>` → `{ ok, running, phase, headline, model, progress }`；会话不在本进程时 `409 session-not-live`
+- `GET /session-companion/status?session=<id>[&detail=1]` → `{ ok, running, phase, headline, model, progress }`；会话不在本进程时 `409 session-not-live`。不带 `detail` 时不测 token、不生成摘要（`/status` 只读状态）；`detail=1` 由打开的面板发出，用来取 `progress.tokens`
 - `POST /session-companion/ask` `{ sessionId, question, history, tone, mode }` → SSE 事件流：`start` / `delta` / `done` / `error`；`mode: 'overview'` 表示这是面板自动发的概况请求，Host 会在 system prompt 末尾追加强制约束（只描述、不建议、80 字左右），其它取值一律按追问处理
 
 概况没有单独的接口：它就是 `/ask` 带着一句固定的问题、`history: []`，前端把结果写进概况卡而不是问答线程。

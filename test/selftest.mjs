@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { apply, _internals } from '../index.js';
 
-const { normalizeConfig, readSession, renderEvent, renderLive, textOf, reasoningOf, oneLine, tail, head } = _internals;
+const { normalizeConfig, readSession, renderEvent, renderLive, textOf, reasoningOf, oneLine, tail, head, appendTail } =
+  _internals;
 
 let passed = 0;
 function check(name, fn) {
@@ -302,6 +303,26 @@ check('context pressure is passed through to the strip and the digest', () => {
   assert.ok(on.digest.includes('[上下文用量] 约 48300 tokens'));
 });
 
+check('a streamed buffer grows cheaply and stays bounded', () => {
+  let text = '';
+  for (let i = 0; i < 300; i += 1) text = appendTail(text, 'x'.repeat(100), 6000);
+  assert.ok(text.length <= 12001, 'the buffer never exceeds twice the cap');
+  assert.ok(text.endsWith('xxx'), 'the newest deltas survive');
+  assert.equal(appendTail('abc', 'def', 6000), 'abcdef', 'a short buffer is untouched');
+  const trimmed = appendTail('x'.repeat(20000), 'y', 6000);
+  assert.equal(trimmed.length, 6001, 'an oversized buffer is trimmed to the cap');
+  assert.ok(trimmed.startsWith('…'), 'the trim is marked, not silent');
+});
+
+check('a status-only read skips the digest it would have thrown away', () => {
+  const session = makeSession(log);
+  const cfg = normalizeConfig({});
+  const full = readSession(session, null, false, cfg);
+  const bare = readSession(session, null, false, cfg, null, false);
+  assert.equal(bare.digest, '', 'no prose is rendered for /status');
+  assert.deepEqual(bare.status, full.status, 'the status line is unchanged');
+});
+
 check('malformed tool arguments never throw', () => {
   const session = makeSession([
     { type: 'tool/call', seq: 1, time: Date.now(), data: { name: 'edit', arguments: '{"file_path":' } },
@@ -412,5 +433,53 @@ const badJson = await hit(routes[0], 'POST', '/session-companion/ask', '{not jso
 assert.equal(badJson.code, 400);
 passed += 1;
 console.log('ok  /ask with malformed JSON is a 400');
+
+/* ------------------------------------------- the cost of a status poll */
+
+const liveRoutes = [];
+const meterCalls = { n: 0 };
+const liveSession = makeSession(log);
+const liveCtx = {
+  effect(fn) {
+    const dispose = fn();
+    return typeof dispose === 'function' ? dispose : () => {};
+  },
+  on() {
+    return () => {};
+  },
+  get(name) {
+    if (name !== 'tokenMeter') return null;
+    return {
+      measure() {
+        meterCalls.n += 1;
+        return { totalTokens: 48300 };
+      },
+    };
+  },
+  sessions: { get: (id) => (id === liveSession.id ? liveSession : undefined) },
+  llm: { stream: async function* () {} },
+  webServer: {
+    register(route) {
+      liveRoutes.push(route);
+      return () => {};
+    },
+  },
+};
+apply(liveCtx, { enabled: true });
+assert.ok(liveRoutes.length === 1, 'the route is mounted against a live Session');
+
+const plainStatus = await hit(liveRoutes[0], 'GET', '/session-companion/status?session=' + liveSession.id);
+assert.equal(plainStatus.code, 200);
+assert.equal(JSON.parse(plainStatus.body).ok, true);
+assert.equal(JSON.parse(plainStatus.body).progress.tokens, null);
+assert.equal(meterCalls.n, 0, 'a closed panel does not pay for the O(surface) measurement');
+passed += 1;
+console.log('ok  a plain /status poll never measures the token surface');
+
+const detailed = await hit(liveRoutes[0], 'GET', '/session-companion/status?session=' + liveSession.id + '&detail=1');
+assert.equal(JSON.parse(detailed.body).progress.tokens, 48300);
+assert.equal(meterCalls.n, 1, 'detail=1 is what buys the measurement');
+passed += 1;
+console.log('ok  detail=1 carries the token chip');
 
 console.log('\n' + passed + ' checks passed');

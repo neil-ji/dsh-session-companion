@@ -93,6 +93,9 @@ globalThis.fetch = async function (url, init) {
     calls.status += 1;
     if (statusReply === 'gone') return jsonResponse({ ok: false, error: 'session-not-live' }, 409);
     const advanced = statusReply === 'advanced';
+    // Same step and headline, only the progress band moved: the panel must not
+    // swallow this one (it used to).
+    const progressOnly = statusReply === 'progress';
     return jsonResponse({
       ok: true,
       running: true,
@@ -102,10 +105,10 @@ globalThis.fetch = async function (url, init) {
       progress: {
         turn: 2,
         step: advanced ? 4 : 3,
-        elapsedMs: 60000,
+        elapsedMs: progressOnly ? 120000 : 60000,
         todos: { total: 3, done: 1, active: '跑自测' },
-        files: 2,
-        tokens: 48300,
+        files: progressOnly ? 5 : 2,
+        tokens: progressOnly ? 123000 : 48300,
         stall: null,
       },
     });
@@ -124,8 +127,13 @@ globalThis.window = {
   },
   removeEventListener: () => {},
 };
-// The panel polls on an interval; a test must not keep the process alive.
-globalThis.setInterval = () => 0;
+// The panel polls on a timer; a test must not keep the process alive. The
+// callbacks are captured so a tick can be driven by hand.
+const intervals = [];
+globalThis.setInterval = (fn) => {
+  intervals.push(fn);
+  return intervals.length;
+};
 globalThis.clearInterval = () => {};
 globalThis.document = {
   createElement: () => ({ dataset: {}, textContent: '', remove() {} }),
@@ -223,6 +231,15 @@ function findByClass(node, className) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 15));
 
+/** Run one poll tick by hand (the interval itself is stubbed out). */
+async function poll() {
+  const latest = intervals[intervals.length - 1];
+  assert.ok(typeof latest === 'function', 'the panel registered a poll tick');
+  latest();
+  await tick();
+  await tick();
+}
+
 let passed = 0;
 async function check(name, fn) {
   await fn();
@@ -298,6 +315,21 @@ await check('a session that is not live is not asked at all', async () => {
   assert.equal(calls.ask, before, 'no model call for a dead session');
   const panel = slots['shell.overlay']({});
   assert.ok(textOfTree(panel).includes('这个会话已经不在当前进程里运行了'), 'the panel explains why');
+  statusReply = 'live';
+});
+
+await check('a poll that only moves the progress band still reaches the panel', async () => {
+  statusReply = 'live';
+  await poll();
+  const first = slots['shell.overlay']({});
+  assert.ok(textOfTree(first).includes('2 个文件'), 'the band shows the first reading');
+
+  // Same step, same headline: only files, tokens and elapsed moved.
+  statusReply = 'progress';
+  await poll();
+  const text = textOfTree(slots['shell.overlay']({}));
+  assert.ok(text.includes('5 个文件'), 'the file count follows the Session');
+  assert.ok(text.includes('123k tok'), 'the token chip follows the Session');
   statusReply = 'live';
 });
 

@@ -6,8 +6,15 @@ window.__ModuleLoader__.load({
 
     const NS = 'sessionCompanion';
     const ROUTE = '/session-companion';
+    /** Panel open: the progress band is worth a fresh read every few seconds. */
     const POLL_MS = 6000;
-    const EMIT_MS = 45;
+    /** Panel closed: the trigger only needs a hover hint, so idle polling is cheap. */
+    const POLL_IDLE_MS = 30000;
+    /** The Session is not in this process: the Host answers 409 without reading
+        anything, so probing stays cheap — but slow enough to be background noise. */
+    const POLL_DEAD_MS = 60000;
+    /** Streaming text is coalesced into at most ~10 renders a second. */
+    const EMIT_MS = 100;
 
     /**
      * Materials ("themes"). Every hue lives in PALETTE_CSS; this table only
@@ -65,6 +72,20 @@ window.__ModuleLoader__.load({
     const THREAD_KEY = 'dsh-session-companion.threads.v1';
     const THREAD_MAX_MESSAGES = 30;
     const THREAD_MAX_CHARS = 2000;
+    /** Sessions kept in storage; the map must not grow with every chat ever opened. */
+    const THREAD_MAX_SESSIONS = 12;
+
+    /**
+     * Keep only the most recently written Sessions. Key order is insertion
+     * order, so a re-written Session has to be re-inserted (see persistThread)
+     * to count as recent. Mutates in place: the in-memory map shrinks too.
+     */
+    function capThreads(threads) {
+      const keys = Object.keys(threads);
+      if (keys.length <= THREAD_MAX_SESSIONS) return threads;
+      for (const key of keys.slice(0, keys.length - THREAD_MAX_SESSIONS)) delete threads[key];
+      return threads;
+    }
 
     /** Keep a thread small enough for localStorage and cheap to re-render. */
     function pruneThread(messages) {
@@ -91,7 +112,7 @@ window.__ModuleLoader__.load({
           const pruned = pruneThread(parsed[key]);
           if (pruned.length) threads[key] = pruned;
         }
-        return threads;
+        return capThreads(threads);
       } catch {
         return {};
       }
@@ -99,7 +120,7 @@ window.__ModuleLoader__.load({
 
     function writeThreads(storage, threads) {
       try {
-        storage.setItem(THREAD_KEY, JSON.stringify(threads));
+        storage.setItem(THREAD_KEY, JSON.stringify(capThreads(threads)));
         return true;
       } catch {
         // Quota or private mode: the thread simply stays in memory.
@@ -400,6 +421,7 @@ window.__ModuleLoader__.load({
       '.sc-activity{padding-left:14px;margin-top:6px;}',
       '.sc-phase::after{content:"·";margin-left:6px;opacity:.45;}',
       '.sc-list{flex:1 1 auto;padding:18px 18px 20px;gap:18px;}',
+      '.sc-list.is-following{scroll-behavior:auto;}',
       '.sc-body{flex:1 1 auto;}',
       '.sc-bot{font-size:13.5px;line-height:1.82;letter-spacing:.008em;color:var(--dsw-alias-label-primary);}',
       '.sc-user{background:rgba(104,132,255,.08);border:1px solid rgba(104,132,255,.13);box-shadow:0 1px 2px rgba(23,32,64,.04);}',
@@ -781,6 +803,7 @@ window.__ModuleLoader__.load({
     };
     const listeners = new Set();
     let seq = 0;
+    let version = 0;
     let abortController = null;
     let pollTimer = null;
 
@@ -799,10 +822,14 @@ window.__ModuleLoader__.load({
         themePicker: store.themePicker,
         tone: store.tone,
         confirmClear: store.confirmClear,
+        // Bumped on every emit so render effects can key off "something
+        // changed" while the arrays themselves stay reference-stable.
+        version: version,
       };
     }
 
     function emit() {
+      version += 1;
       for (const fn of Array.from(listeners)) {
         try {
           fn();
@@ -824,15 +851,34 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /**
+     * Everything the panel actually paints from. The old check compared only
+     * the headline fields, so a poll that moved the progress band alone (tools,
+     * files, tokens, elapsed) was dropped and the numbers froze.
+     */
+    function statusSignature(status) {
+      if (!status) return '';
+      const progress = status.progress || {};
+      const todos = progress.todos || null;
+      const stall = progress.stall || null;
+      return [
+        status.running ? 'run' : 'idle',
+        status.phase || '',
+        status.headline || '',
+        status.model || '',
+        progress.turn || 0,
+        progress.step || 0,
+        progress.elapsedMs || 0,
+        progress.files || 0,
+        typeof progress.tokens === 'number' ? progress.tokens : '',
+        todos ? todos.total + '/' + todos.done + '/' + (todos.active || '') : '',
+        stall ? stall.kind + ':' + stall.detail : '',
+      ].join('|');
+    }
+
     function applyStatus(next, forId) {
-      const current = store.status;
       const same =
-        current &&
-        store.statusFor === forId &&
-        current.running === next.running &&
-        current.phase === next.phase &&
-        current.headline === next.headline &&
-        current.model === next.model;
+        store.statusFor === forId && statusSignature(store.status) === statusSignature(next);
       if (same && !store.statusError) return;
       patch({ status: next, statusFor: forId, statusError: '' });
     }
@@ -860,7 +906,10 @@ window.__ModuleLoader__.load({
     }
 
     async function fetchStatus(id) {
-      const response = await fetch(ROUTE + '/status?session=' + encodeURIComponent(id), {
+      // `detail` asks the Host for the token chip, which costs an O(surface)
+      // measurement. Only the open panel shows it.
+      const detail = store.open ? '&detail=1' : '';
+      const response = await fetch(ROUTE + '/status?session=' + encodeURIComponent(id) + detail, {
         cache: 'no-store',
         credentials: 'same-origin',
       });
@@ -880,36 +929,89 @@ window.__ModuleLoader__.load({
       };
     }
 
-    async function pollOnce() {
+    /** One status read; concurrent callers share the request instead of stacking. */
+    let statusInFlight = null;
+
+    function pollOnce() {
       const id = pollTarget();
-      if (!id) return null;
-      try {
-        const result = await fetchStatus(id);
-        if (!result) return null;
-        if (result.notLive) {
-          if (store.open && store.sessionId === id) patch({ statusError: 'session-not-live', status: null });
+      if (!id) return Promise.resolve(null);
+      if (statusInFlight && statusInFlight.id === id) return statusInFlight.promise;
+      const run = (async function () {
+        try {
+          const result = await fetchStatus(id);
+          if (!result) return null;
+          if (result.notLive) {
+            if (store.open && store.sessionId === id) patch({ statusError: 'session-not-live', status: null });
+            return result;
+          }
+          applyStatus(result.status, id);
           return result;
+        } catch {
+          /* the Host may be restarting; the next tick retries */
+          return null;
         }
-        applyStatus(result.status, id);
-        return result;
-      } catch {
-        /* the Host may be restarting; the next tick retries */
-        return null;
-      }
+      })();
+      const entry = { id: id, promise: run };
+      statusInFlight = entry;
+      const clear = function () {
+        if (statusInFlight === entry) statusInFlight = null;
+      };
+      run.then(clear, clear);
+      return run;
+    }
+
+    /* The panel is on screen: 6 s. Closed: 30 s, enough for the hover hint.
+       Never polled in a hidden window, and a dead Session drops to a minute. */
+    function pollDelay() {
+      if (store.statusError === 'session-not-live') return POLL_DEAD_MS;
+      return store.open ? POLL_MS : POLL_IDLE_MS;
+    }
+
+    function windowVisible() {
+      return typeof document === 'undefined' || document.visibilityState !== 'hidden';
+    }
+
+    let pollStarted = false;
+    let pollEvery = 0;
+
+    function retimePolling() {
+      // A tick may resolve after the plugin was disposed: never resurrect the
+      // timer from underneath stopPolling().
+      if (!pollStarted) return;
+      const every = pollDelay();
+      if (pollEvery === every) return;
+      if (pollTimer) clearInterval(pollTimer);
+      pollEvery = every;
+      pollTimer = setInterval(function () {
+        void pollTick();
+      }, every);
+    }
+
+    async function pollTick() {
+      if (!windowVisible()) return;
+      await pollOnce();
+      // A 409 or an open/close changed the cadence while this tick ran.
+      retimePolling();
     }
 
     function ensurePolling() {
-      if (pollTimer) return;
-      void pollOnce();
-      pollTimer = setInterval(function () {
-        void pollOnce();
-      }, POLL_MS);
+      if (!pollStarted) {
+        pollStarted = true;
+        pollEvery = pollDelay();
+        pollTimer = setInterval(function () {
+          void pollTick();
+        }, pollEvery);
+        void pollTick();
+        return;
+      }
+      retimePolling();
     }
 
     function stopPolling() {
-      if (!pollTimer) return;
-      clearInterval(pollTimer);
+      if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
+      pollEvery = 0;
+      pollStarted = false;
     }
 
     /* -------------------------------------------------------- conversation */
@@ -1075,6 +1177,8 @@ window.__ModuleLoader__.load({
       if (!id || !store.messages.length) return;
       const pruned = pruneThread(store.messages);
       if (!pruned.length) return;
+      // Re-insert so this Session counts as the most recent for the LRU cap.
+      delete store.threads[id];
       store.threads[id] = pruned;
       writeThreads(window.localStorage, store.threads);
     }
@@ -1207,6 +1311,9 @@ window.__ModuleLoader__.load({
 
     function closeCompanion() {
       patch({ open: false, confirmClear: false });
+      // Closed is not stopped: the trigger still shows a hover hint, but at the
+      // slow cadence instead of the panel's.
+      ensurePolling();
     }
 
     /** Forget this Session's thread, in memory and in storage. */
@@ -1372,15 +1479,27 @@ window.__ModuleLoader__.load({
         [state.open],
       );
 
-      React.useEffect(function () {
-        const node = listRef.current;
-        if (!node) return;
-        if (stickRef.current) node.scrollTop = node.scrollHeight;
-        // Content that suddenly fits (a short overview) must not keep showing
-        // the "jump to latest" pill.
-        const near = node.scrollHeight - node.scrollTop - node.clientHeight < 56;
-        if (near !== stuck) setStuck(near);
-      });
+      // Keyed on the store version: messages and overview are mutated in place,
+      // so a dependency on the array itself would never fire — and a dependency
+      // list is what keeps this from forcing a layout on every render.
+      React.useEffect(
+        function () {
+          const node = listRef.current;
+          if (!node) return;
+          if (stickRef.current) {
+            // Pinned to the bottom: the write answers the question for us, so
+            // there is no need to measure the layout as well.
+            node.scrollTop = node.scrollHeight;
+            if (!stuck) setStuck(true);
+            return;
+          }
+          // Content that suddenly fits (a short overview) must not keep showing
+          // the "jump to latest" pill.
+          const near = node.scrollHeight - node.scrollTop - node.clientHeight < 56;
+          if (near !== stuck) setStuck(near);
+        },
+        [state.version],
+      );
 
       // Opening the panel is a request for the situation, so it lands on the
       // overview at the top — not at the bottom of an older conversation.
@@ -1758,7 +1877,10 @@ window.__ModuleLoader__.load({
           h(
             'div',
             {
-              className: 'sc-list',
+              // Smooth scrolling is for one-off jumps; while text is streaming
+              // the list is re-pinned every tick, and an animation per tick is
+              // both wasted work and a source of "near the bottom" flapping.
+              className: 'sc-list' + (state.busy || (overview && overview.streaming) ? ' is-following' : ''),
               ref: listRef,
               role: 'log',
               'aria-live': state.busy ? 'off' : 'polite',
@@ -1892,6 +2014,23 @@ window.__ModuleLoader__.load({
             };
           },
           'session-companion.shortcut',
+        );
+
+        ctx.effect(
+          function () {
+            // A hidden window has nobody reading the hover hint: skip the poll
+            // entirely, then catch up in one request when it comes back.
+            if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+            const onVisibility = function () {
+              if (document.visibilityState === 'hidden') return;
+              if (pollStarted) void pollTick();
+            };
+            document.addEventListener('visibilitychange', onVisibility);
+            return function () {
+              document.removeEventListener('visibilitychange', onVisibility);
+            };
+          },
+          'session-companion.visibility',
         );
 
         ctx.effect(

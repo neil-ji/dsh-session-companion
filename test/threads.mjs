@@ -21,10 +21,18 @@ assert.ok(start > 0 && end > start, 'threads region markers are present');
 const region = source.slice(start, end);
 const factory = new Function(
   region +
-    '\nreturn { pruneThread, readThreads, writeThreads, dropThread, THREAD_KEY, THREAD_MAX_MESSAGES, THREAD_MAX_CHARS };',
+    '\nreturn { pruneThread, readThreads, writeThreads, dropThread, capThreads, THREAD_KEY, THREAD_MAX_MESSAGES, THREAD_MAX_CHARS, THREAD_MAX_SESSIONS };',
 );
-const { pruneThread, readThreads, writeThreads, dropThread, THREAD_KEY, THREAD_MAX_MESSAGES, THREAD_MAX_CHARS } =
-  factory();
+const {
+  pruneThread,
+  readThreads,
+  writeThreads,
+  dropThread,
+  THREAD_KEY,
+  THREAD_MAX_MESSAGES,
+  THREAD_MAX_CHARS,
+  THREAD_MAX_SESSIONS,
+} = factory();
 
 let passed = 0;
 function check(name, fn) {
@@ -144,6 +152,20 @@ check('clearing survives a storage without removeItem', () => {
   assert.doesNotThrow(() => dropThread(storage, threads, 's1'));
   assert.deepEqual(Object.keys(threads), []);
   assert.equal(map.get(THREAD_KEY), '{}', 'the empty object clears the entry');
+});
+
+check('only the most recent Sessions stay in storage', () => {
+  const storage = fakeStorage();
+  const threads = {};
+  for (let i = 0; i < THREAD_MAX_SESSIONS + 8; i += 1) {
+    threads['session-' + i] = [{ role: 'user', text: 'q' + i }];
+  }
+  writeThreads(storage, threads);
+  const stored = readThreads(storage);
+  const keys = Object.keys(stored);
+  assert.equal(keys.length, THREAD_MAX_SESSIONS, 'the map stops growing with every chat');
+  assert.equal(keys[keys.length - 1], 'session-' + (THREAD_MAX_SESSIONS + 7), 'the newest survives');
+  assert.ok(!stored['session-0'], 'the oldest fell off');
 });
 
 console.log('\n' + passed + ' checks passed');

@@ -130,6 +130,17 @@ function tail(value, max) {
   return s.length > max ? '…' + s.slice(s.length - max) : s;
 }
 
+/**
+ * Append one streamed delta to a growing buffer without copying a full 6 KB
+ * string on every delta: concatenation is amortised, and the trim only runs
+ * once the buffer has grown to twice the cap. Bounded at `cap * 2 + 1`.
+ */
+function appendTail(current, addition, cap) {
+  const next = String(current == null ? '' : current) + String(addition == null ? '' : addition);
+  if (next.length <= cap * 2) return next;
+  return '…' + next.slice(next.length - cap);
+}
+
 function head(value, max) {
   const s = String(value == null ? '' : value).replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
   return s.length > max ? s.slice(0, max) + '…' : s;
@@ -263,8 +274,13 @@ function renderEvent(event) {
 /**
  * Walk the tail of a Session's log and turn it into a digest plus the state a
  * status line needs. Pure: nothing is written back.
+ *
+ * `wantDigest: false` skips the prose half entirely — `/status` polls this every
+ * few seconds and only ever reads `status`, so rendering a digest it discards
+ * would be pure waste.
  */
-function readSession(session, live, running, cfg, tokens) {
+function readSession(session, live, running, cfg, tokens, wantDigest) {
+  const withDigest = wantDigest !== false;
   const end = Number(session.seq) || 0;
   const from = Math.max(0, end - cfg.historyEvents * 4);
   let events = safe(() => session.snapshotEvents(from), null);
@@ -332,16 +348,27 @@ function readSession(session, live, running, cfg, tokens) {
       failRun = failed ? failRun + 1 : 0;
     }
 
-    const rendered = renderEvent(event);
-    if (rendered) lines.push.apply(lines, rendered);
+    if (withDigest) {
+      const rendered = renderEvent(event);
+      if (rendered) lines.push.apply(lines, rendered);
+    }
   }
 
-  // Keep the newest lines inside the character budget.
-  while (lines.length > cfg.historyEvents * 2) lines.shift();
-  let body = lines.join('\n');
-  while (body.length > cfg.digestChars && lines.length > 1) {
-    lines.shift();
-    body = lines.join('\n');
+  // Keep the newest lines inside both budgets, in one pass from the tail: the
+  // old shift-and-rejoin loop copied the whole body once per dropped line.
+  let body = '';
+  if (withDigest) {
+    const keepFrom = Math.max(0, lines.length - cfg.historyEvents * 2);
+    let first = lines.length;
+    let size = 0;
+    for (let i = lines.length - 1; i >= keepFrom; i -= 1) {
+      const width = lines[i].length + (first === lines.length ? 0 : 1);
+      // Always keep at least the newest line, however long it is.
+      if (size + width > cfg.digestChars && first !== lines.length) break;
+      size += width;
+      first = i;
+    }
+    body = lines.slice(first).join('\n');
   }
 
   const liveText = renderLive(live);
@@ -403,6 +430,8 @@ function readSession(session, live, running, cfg, tokens) {
     },
   };
 
+  if (!withDigest) return { digest: '', status };
+
   const parts = [];
   parts.push('[会话] ' + String(session.id || '?') + '   模型: ' + (model || '未知') + '   轮次: ' + (phase || '未开始'));
   const cwd = safe(() => (session.header && session.header.cwd) || '', '');
@@ -455,6 +484,11 @@ export function apply(ctx, rawConfig) {
   /** sessionId -> true while its agent reports running */
   const runningBySession = new Map();
 
+  /** How much of one streamed field is worth keeping (readers only show the tail). */
+  const LIVE_FIELD_CAP = 6000;
+  /** Kept after the step ends: enough for the one-line headline, not the whole text. */
+  const LIVE_EXCERPT = 200;
+
   ctx.effect(() => {
     const off = ctx.on('agent/assistant-stream', (payload) => {
       const frame = payload && payload.frame;
@@ -474,17 +508,27 @@ export function apply(ctx, rawConfig) {
       }
       if (frame.type === 'end') {
         const current = liveBySession.get(id);
-        if (current) current.at = 0;
+        if (current) {
+          // The step's text is now in the log; the live copy only has to keep
+          // the opening the headline quotes, so drop the rest.
+          current.at = 0;
+          current.endedAt = Date.now();
+          current.reasoning = '';
+          current.tools = [];
+          current.text = current.text.slice(0, LIVE_EXCERPT);
+        }
         return;
       }
       const current = liveBySession.get(id) || { turn: 0, step: 0, reasoning: '', text: '', tools: [], at: 0 };
       current.at = Date.now();
       const chunk = frame.chunk;
-      if (chunk && chunk.type === 'reasoning-delta') current.reasoning = tail(current.reasoning + (chunk.text || ''), 6000);
-      else if (chunk && chunk.type === 'text-delta') current.text = tail(current.text + (chunk.text || ''), 6000);
-      else if (chunk && chunk.type === 'tool-call-delta') {
+      if (chunk && chunk.type === 'reasoning-delta') {
+        current.reasoning = appendTail(current.reasoning, chunk.text || '', LIVE_FIELD_CAP);
+      } else if (chunk && chunk.type === 'text-delta') {
+        current.text = appendTail(current.text, chunk.text || '', LIVE_FIELD_CAP);
+      } else if (chunk && chunk.type === 'tool-call-delta') {
         const last = current.tools[current.tools.length - 1];
-        if (last && last.id === chunk.id) last.text = tail(last.text + (chunk.argumentsDelta || ''), 800);
+        if (last && last.id === chunk.id) last.text = appendTail(last.text, chunk.argumentsDelta || '', 800);
         else current.tools.push({ id: chunk.id, name: chunk.name || '', text: chunk.argumentsDelta || '' });
       }
       liveBySession.set(id, current);
@@ -545,16 +589,39 @@ export function apply(ctx, rawConfig) {
     return total;
   }
 
-  function snapshot(sessionId) {
+  /**
+   * Forget per-Session state nobody is looking at any more. The live buffers
+   * hold up to ~12 KB each, and sessions keep coming and going for as long as
+   * the app stays open, so the maps must not grow forever.
+   */
+  const LIVE_KEEP_MS = 10 * 60 * 1000;
+  const TOKEN_KEEP_MS = 5 * 60 * 1000;
+
+  function prune(now) {
+    for (const [id, entry] of liveBySession) {
+      const seenAt = entry.at || entry.endedAt || 0;
+      if (!seenAt || now - seenAt > LIVE_KEEP_MS) liveBySession.delete(id);
+    }
+    for (const [id, entry] of tokenCache) {
+      if (now - entry.at > TOKEN_KEEP_MS) tokenCache.delete(id);
+    }
+  }
+
+  function snapshot(sessionId, options) {
+    const opts = options || {};
     const found = findSession(sessionId);
     if (!found) return { ok: false, error: 'session-not-live' };
     const id = String(sessionId);
+    prune(Date.now());
     const built = readSession(
       found.session,
       liveBySession.get(id),
       runningBySession.get(id),
       cfg,
-      measureTokens(found.session),
+      // `measure` clones and freezes the whole priced surface: only pay for it
+      // when the panel is actually going to show the number.
+      opts.tokens ? measureTokens(found.session) : null,
+      opts.digest !== false,
     );
     return { ok: true, digest: built.digest, status: built.status };
   }
@@ -785,7 +852,12 @@ export function apply(ctx, rawConfig) {
           sendJson(res, { ok: false, error: 'missing-session' }, 400);
           return;
         }
-        const found = snapshot(sessionId);
+        const found = snapshot(sessionId, {
+          // The status line is not the digest: skip the prose the panel throws away.
+          digest: false,
+          // `detail=1` means the panel is on screen and shows the token chip.
+          tokens: url.searchParams.get('detail') === '1',
+        });
         if (!found.ok) {
           sendJson(res, found, 409);
           return;
@@ -853,5 +925,6 @@ export const _internals = {
   oneLine,
   tail,
   head,
+  appendTail,
   routePrefix: ROUTE_PREFIX,
 };
